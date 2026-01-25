@@ -1,0 +1,29 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  topic-engine:
+    build:
+      context: .
+      dockerfile: backend_py/app/AI‑Powered-Topic-Selection-Engine/Dockerfile
+    env_file:
+      - backend_py/.env
+    environment:
+      # point engine to qdrant container
+      QDRANT_URL: http://qdrant:6333
+      USE_QDRANT: "true"
+      QDRANT_AUTO_INDEX: "true"
+      QDRANT_COLLECTION: topic_kb
+      QDRANT_VECTOR_SIZE: "256"
+      OPENALEX_FALLBACK: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - qdrant
+
+volumes:
+  qdrant_data:
