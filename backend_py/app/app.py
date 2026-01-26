@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 # Add engine path for imports
-sys.path.insert(0, str(Path(__file__).parent / "AI‑Powered-Topic-Selection-Engine"))
+sys.path.insert(0, str(Path(__file__).parent / "AI Powered Topic Selection Engine"))
 
 import engine as engine_mod  # type: ignore
 from engine import generate_topics  # type: ignore
