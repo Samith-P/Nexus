@@ -5,7 +5,18 @@ import sys
 from pathlib import Path
 
 # Add engine path for imports
-sys.path.insert(0, str(Path(__file__).parent / "AI Powered Topic Selection Engine"))
+# NOTE: The engine lives in a folder whose name includes spaces in this repo.
+# Some environments previously referenced a hyphenated variant; keep a fallback.
+_engine_dir_candidates = [
+    Path(__file__).parent / "AI Powered Topic Selection Engine",
+    Path(__file__).parent / "AI-Powered-Topic-Selection-Engine",
+    Path(__file__).parent / "AI‑Powered-Topic-Selection-Engine",  # includes a non-breaking hyphen
+]
+
+for _engine_dir in _engine_dir_candidates:
+    if _engine_dir.exists():
+        sys.path.insert(0, str(_engine_dir))
+        break
 
 import engine as engine_mod  # type: ignore
 from engine import generate_topics  # type: ignore
