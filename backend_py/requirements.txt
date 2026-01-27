@@ -1,0 +1,14 @@
+
+# Core HTTP + API
+fastapi>=0.110
+uvicorn[standard]>=0.27
+requests>=2.31
+pydantic>=2.6
+
+# Vector DB client (Qdrant)
+qdrant-client>=1.9
+
+# Datasets parsing (PDF + XLSX)
+pypdf>=4.0
+openpyxl>=3.1
+
