@@ -1,2 +1,5 @@
 google-genai
 requests
+fastapi 
+uvicorn 
+pydantic

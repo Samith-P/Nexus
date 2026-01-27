@@ -53,3 +53,4 @@ Thumbs.db
 logs
 *.log
 
+backend_py/.env
