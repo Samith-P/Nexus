@@ -1,51 +1,81 @@
 import json
 import re
 
+# ---------- Helpers ----------
+
+def safe_float(value):
+    if value is None:
+        return None
+    value = str(value).strip()
+    if value == "" or value == "-" or value.lower() == "nan":
+        return None
+    return float(value.replace(",", "."))
+
+
+def safe_int(value):
+    if value is None:
+        return None
+    value = str(value).strip()
+    if value == "" or value == "-" or value.lower() == "nan":
+        return None
+    return int(value.replace(",", ""))
+
+
 def parse_sjr(sjr_raw):
     if not sjr_raw:
-        return {"sjr": 0.0, "quartile": None}
+        return {"sjr": None, "quartile": None}
 
-    match = re.search(r"([\d.]+)", sjr_raw)
-    sjr = float(match.group(1)) if match else 0.0
+    sjr_raw = sjr_raw.strip()
+
+    # Extract numeric SJR
+    match = re.search(r"([\d.,]+)", sjr_raw)
+    sjr = safe_float(match.group(1)) if match else None
 
     quartile = None
-    if "Q1" in sjr_raw:
-        quartile = "Q1"
-    elif "Q2" in sjr_raw:
-        quartile = "Q2"
-    elif "Q3" in sjr_raw:
-        quartile = "Q3"
-    elif "Q4" in sjr_raw:
-        quartile = "Q4"
+    for q in ["Q1", "Q2", "Q3", "Q4"]:
+        if q in sjr_raw:
+            quartile = q
+            break
 
     return {"sjr": sjr, "quartile": quartile}
 
 
-with open("journals_raw.json", "r", encoding="utf-8") as f:
+# ---------- Load raw data ----------
+
+with open("journals_scimago_raw.json", "r", encoding="utf-8") as f:
     journals = json.load(f)
 
 cleaned = []
 
+# ---------- Cleaning loop ----------
+
 for j in journals:
-    sjr_data = parse_sjr(j.get("sjr", ""))
+    sjr_data = parse_sjr(j.get("sjr_raw"))
 
     cleaned.append({
-        "title": j["title"],
-        "type": j["type"],
+        "title": j.get("title"),
+        "type": j.get("type"),
         "sjr": sjr_data["sjr"],
         "quartile": sjr_data["quartile"],
-        "h_index": int(j["h_index"]),
-        "total_docs_2024": int(j["total_docs_2024"]),
-        "total_docs_3y": int(j["total_docs_3y"]),
-        "total_refs_2024": int(j["total_refs_2024"]),
-        "total_citations_3y": int(j["total_citations_3y"]),
-        "citable_docs_3y": int(j["citable_docs_3y"]),
-        "citations_per_doc_2y": float(j["citations_per_doc_2y"]),
-        "refs_per_doc_2024": float(j["refs_per_doc_2024"]),
-        "female_percent_2024": float(j["female_percent_2024"]) if j["female_percent_2024"] else None
+        "h_index": safe_int(j.get("h_index")),
+        "total_docs_2024": safe_int(j.get("total_docs_2024")),
+        "total_docs_3y": safe_int(j.get("total_docs_3y")),
+        "total_refs_2024": safe_int(j.get("total_refs_2024")),
+        "total_citations_3y": safe_int(j.get("total_citations_3y")),
+        "citable_docs_3y": safe_int(j.get("citable_docs_3y")),
+        "citations_per_doc_2y": safe_float(j.get("citations_per_doc_2y")),
+        "refs_per_doc_2024": safe_float(j.get("refs_per_doc_2024")),
+        "female_percent_2024": safe_float(j.get("female_percent_2024")),
+        "publisher": j.get("publisher"),
+        "open_access": j.get("open_access"),
+        "country": j.get("country"),
+        "categories": j.get("categories"),
+        "areas": j.get("areas"),
     })
 
+# ---------- Save cleaned data ----------
+
 with open("journals_clean.json", "w", encoding="utf-8") as f:
-    json.dump(cleaned, f, indent=2)
+    json.dump(cleaned, f, indent=2, ensure_ascii=False)
 
 print("Cleaned journals:", len(cleaned))

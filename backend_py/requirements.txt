@@ -2,4 +2,6 @@ google-genai
 requests
 fastapi 
 uvicorn 
-pydantic
+pydantic 
+requests 
+beautifulsoup4
