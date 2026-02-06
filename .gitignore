@@ -54,3 +54,7 @@ logs
 *.log
 
 backend_py/.env
+
+backend_py/journals_master.json
+
+backend_py/pipeline_cache/
