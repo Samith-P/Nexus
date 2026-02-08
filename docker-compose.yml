@@ -9,7 +9,7 @@ services:
   topic-engine:
     build:
       context: .
-      dockerfile: backend_py/app/AI Powered Topic Selection Engine/Dockerfile
+      dockerfile: backend_py/app/AI_Powered_Topic_Selection_Engine/Dockerfile
     env_file:
       - backend_py/.env
     environment:

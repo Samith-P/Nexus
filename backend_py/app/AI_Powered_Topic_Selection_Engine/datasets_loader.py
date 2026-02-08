@@ -7,8 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from embedding import cosine_similarity, embed_text
-from qdrant_store import ensure_collection, qdrant_enabled, search as qdrant_search, upsert_topics
+from .embedding import cosine_similarity, embed_text
+from .qdrant_store import ensure_collection, qdrant_enabled, search as qdrant_search, upsert_topics
 
 
 _STOPWORDS = {

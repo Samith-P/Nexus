@@ -7,8 +7,8 @@ from typing import List, Optional, Sequence, Tuple
 
 import os
 
-from embedding import batch_cosine_similarity, embed_text
-from qdrant_store import bootstrap_from_kb, qdrant_enabled, search as qdrant_search
+from .embedding import batch_cosine_similarity, embed_text
+from .qdrant_store import bootstrap_from_kb, qdrant_enabled, search as qdrant_search
 
 
 @dataclass(frozen=True)

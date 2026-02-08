@@ -7,8 +7,8 @@ from pathlib import Path
 # Add engine path for imports
 sys.path.insert(0, str(Path(__file__).parent / "AI‑Powered-Topic-Selection-Engine"))
 
-import engine as engine_mod  # type: ignore
-from engine import generate_topics  # type: ignore
+import AI_Powered_Topic_Selection_Engine.engine as engine_mod
+from AI_Powered_Topic_Selection_Engine.engine import generate_topics
 
 app = FastAPI(
     title="Research Topic Selection Engine",
@@ -48,26 +48,6 @@ def root():
     }
 
 
-@app.get("/debug", include_in_schema=False)
-def debug_config():
-    """Debug endpoint to verify which code/config is running (no secrets)."""
-
-    if os.getenv("ENABLE_DEBUG_ENDPOINT", "0").strip().lower() not in {"1", "true", "yes", "on"}:
-        return {"enabled": False}
-
-    try:
-        bad_title = "Technology Innovation in Commerce Department"
-        check = bool(engine_mod._looks_like_research_topic(bad_title, "EV adoption challenges"))
-    except Exception:
-        check = None
-
-    return {
-        "engine_file": getattr(engine_mod, "__file__", None),
-        "sem_min_hard": os.getenv("SEMANTIC_MIN_HARD", "0.40"),
-        "sem_min_rank": os.getenv("SEMANTIC_MIN", "0.40"),
-        "policy_hit_min": os.getenv("POLICY_HIT_MIN", "0.25"),
-        "topic_shape_allows_bad_title": check,
-    }
 
 if __name__ == "__main__":
     import uvicorn

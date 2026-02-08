@@ -5,10 +5,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import os
 
-from cf import cf_scores
-from embedding import cosine_similarity, embed_text
-from policy import policy_alignment
-from topic_kb import Topic, trend_score
+from .cf import cf_scores
+from .embedding import cosine_similarity, embed_text
+from .policy import policy_alignment
+from .topic_kb import Topic, trend_score
 
 
 def _clamp01(x: float) -> float:

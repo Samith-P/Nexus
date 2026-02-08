@@ -4,18 +4,18 @@ import zlib
 import os
 from typing import Any, Dict, List, Optional
 
-from academic_api import fetch_academic_topics
-from ranking import score_and_rank
+from .academic_api import fetch_academic_topics
+from .ranking import score_and_rank
 import re
 
-from datasets_loader import (
+from .datasets_loader import (
     build_policy_weight_table_from_datasets,
     match_policy_tags,
     synthetic_topics_from_policies,
 )
-from topic_kb import Topic
-from embedding import cosine_similarity, embed_text
-from gemini_polish import polish_topics_inplace
+from .topic_kb import Topic
+from .embedding import cosine_similarity, embed_text
+from .gemini_polish import polish_topics_inplace
 
 
 _BAD_TOPIC_TOKENS = {
