@@ -15,9 +15,27 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return v.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _polish_opt_out_env(name: str) -> bool:
+    # Common opt-out controls.
+    return _env_bool(name, default=True) is False
+
+
+def groq_enabled() -> bool:
+    # Default behavior: enabled if GROQ_API_KEY exists.
+    # Optional opt-out: set GROQ_POLISH=0/false/off.
+    api_key_present = bool((os.getenv("GROQ_API_KEY") or "").strip())
+    if not api_key_present:
+        return False
+    if os.getenv("GROQ_POLISH") is None:
+        # Backward-compatible global opt-out.
+        if os.getenv("GEMINI_POLISH") is not None and _polish_opt_out_env("GEMINI_POLISH"):
+            return False
+        return True
+    return _env_bool("GROQ_POLISH", default=True)
+
+
 def gemini_enabled() -> bool:
-    # Default behavior: enabled if GEMINI_API_KEY exists.
-    # Optional opt-out: set GEMINI_POLISH=0/false/off.
+    # Legacy provider (kept as fallback).
     api_key_present = bool((os.getenv("GEMINI_API_KEY") or "").strip())
     if not api_key_present:
         return False
@@ -32,9 +50,18 @@ def _gemini_model() -> str:
 
 def _timeout_seconds() -> float:
     try:
-        return float(os.getenv("GEMINI_TIMEOUT", "10"))
+        return float(os.getenv("LLM_TIMEOUT", os.getenv("GEMINI_TIMEOUT", "10")))
     except Exception:
         return 10.0
+
+
+def _groq_model() -> str:
+    return (os.getenv("GROQ_MODEL") or "llama-3.1-8b-instant").strip()
+
+
+def _groq_endpoint() -> str:
+    # Groq OpenAI-compatible Chat Completions endpoint
+    return (os.getenv("GROQ_ENDPOINT") or "https://api.groq.com/openai/v1/chat/completions").strip()
 
 
 def _endpoint(api_key: str, model: str) -> str:
@@ -142,13 +169,10 @@ def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
 
 
 @lru_cache(maxsize=256)
-def _polish_cached(title: str, reasons_json: str) -> Optional[Dict[str, str]]:
-    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
-    if not api_key:
-        return None
-
-    model = _gemini_model()
-    url = _endpoint(api_key=api_key, model=model)
+def _polish_cached(provider: str, title: str, reasons_json: str) -> Optional[Dict[str, str]]:
+    provider = (provider or "").strip().lower()
+    if provider not in {"groq", "gemini"}:
+        provider = "groq" if groq_enabled() else "gemini"
 
     try:
         reasons = json.loads(reasons_json)
@@ -159,40 +183,70 @@ def _polish_cached(title: str, reasons_json: str) -> Optional[Dict[str, str]]:
 
     prompt = _build_prompt(title=title, reasons=[str(r) for r in reasons])
 
-    payload: Dict[str, Any] = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": prompt}],
-            }
-        ],
-        "generationConfig": {
+    if provider == "groq":
+        api_key = (os.getenv("GROQ_API_KEY") or "").strip()
+        if not api_key:
+            return None
+        payload = {
+            "model": _groq_model(),
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a helpful academic writing assistant. You must output STRICT JSON only.",
+                },
+                {"role": "user", "content": prompt},
+            ],
             "temperature": 0.2,
-            "maxOutputTokens": 300,
-        },
-    }
+            "max_tokens": 300,
+        }
+        url = _groq_endpoint()
+        headers = {"Authorization": f"Bearer {api_key}"}
+    else:
+        api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+        if not api_key:
+            return None
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 300,
+            },
+        }
+        url = _endpoint(api_key=api_key, model=_gemini_model())
+        headers = None
 
     try:
-        resp = requests.post(url, json=payload, timeout=_timeout_seconds())
+        resp = requests.post(url, json=payload, headers=headers, timeout=_timeout_seconds())
         if resp.status_code >= 400:
             return None
         data = resp.json()
 
-        # Extract text from response (concatenate all parts)
+        # Extract text from response.
         text = ""
-        for cand in data.get("candidates", []) or []:
-            content = cand.get("content") or {}
-            parts = content.get("parts") or []
-            if not isinstance(parts, list):
-                continue
-            chunks: List[str] = []
-            for p in parts:
-                if isinstance(p, dict) and (p.get("text") is not None):
-                    chunks.append(str(p.get("text") or ""))
-            joined = "".join(chunks).strip()
-            if joined:
-                text = joined
-                break
+        if provider == "groq":
+            choices = data.get("choices") or []
+            if isinstance(choices, list) and choices:
+                msg = (choices[0] or {}).get("message") or {}
+                text = str(msg.get("content") or "").strip()
+        else:
+            for cand in data.get("candidates", []) or []:
+                content = cand.get("content") or {}
+                parts = content.get("parts") or []
+                if not isinstance(parts, list):
+                    continue
+                chunks: List[str] = []
+                for p in parts:
+                    if isinstance(p, dict) and (p.get("text") is not None):
+                        chunks.append(str(p.get("text") or ""))
+                joined = "".join(chunks).strip()
+                if joined:
+                    text = joined
+                    break
         if not text:
             return None
 
@@ -224,7 +278,11 @@ def polish_topics_inplace(recommended_topics: List[Dict[str, Any]]) -> None:
     Never modifies ranking inputs (title, scores, etc.).
     """
 
-    if not recommended_topics or not gemini_enabled():
+    if not recommended_topics:
+        return
+
+    provider = "groq" if groq_enabled() else ("gemini" if gemini_enabled() else "")
+    if not provider:
         return
 
     try:
@@ -245,7 +303,7 @@ def polish_topics_inplace(recommended_topics: List[Dict[str, Any]]) -> None:
         except Exception:
             reasons_json = "[]"
 
-        polished = _polish_cached(title, reasons_json)
+        polished = _polish_cached(provider, title, reasons_json)
         if not polished:
             continue
 

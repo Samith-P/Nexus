@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import math
+import os
+import re
+import zlib
 from functools import lru_cache
 from typing import Iterable, List, Sequence
 
@@ -19,19 +22,29 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
     return float(dot / denom) if denom else 0.0
 
 
+def _stable_hash(token: str) -> int:
+    return int(zlib.crc32((token or "").encode("utf-8", errors="ignore")) & 0xFFFFFFFF)
+
+
 def _hashing_bow(text: str, dim: int = 256) -> List[float]:
     vec = [0.0] * dim
-    for tok in (text or "").lower().split():
-        vec[hash(tok) % dim] += 1.0
+    # Tokenize more like a word tokenizer (punctuation-safe) and use a stable hash.
+    for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]{1,}", (text or "").lower()):
+        vec[_stable_hash(tok) % dim] += 1.0
     return vec
 
 
 @lru_cache(maxsize=1)
 def _try_sentence_transformer():
+    enabled = os.getenv("USE_SENTENCE_TRANSFORMERS", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+    if not enabled:
+        return None
+
     try:
         from sentence_transformers import SentenceTransformer  # type: ignore
 
-        return SentenceTransformer("ai4bharat/indic-bert")
+        model_name = os.getenv("SENTENCE_TRANSFORMERS_MODEL", "ai4bharat/indic-bert").strip() or "ai4bharat/indic-bert"
+        return SentenceTransformer(model_name)
     except Exception:
         return None
 

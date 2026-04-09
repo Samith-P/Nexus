@@ -38,6 +38,8 @@ def score_and_rank(
     user_id: Optional[str] = None,
     now_year: int = 2026,
     top_k: int = 10,
+    min_semantic: Optional[float] = None,
+    use_policy: bool = True,
 ) -> Dict[str, Any]:
     """Core engine scoring + ranking + explainability.
 
@@ -52,7 +54,8 @@ def score_and_rank(
     query_vec = embed_text(query)
     out: List[Dict[str, Any]] = []
 
-    sem_min = float(os.getenv("SEMANTIC_MIN", "0.40") or 0.40)
+    sem_min_env = float(os.getenv("SEMANTIC_MIN", "0.40") or 0.40)
+    sem_min = float(sem_min_env) if min_semantic is None else float(min_semantic)
     policy_max = float(os.getenv("POLICY_WEIGHT_MAX", "2.5") or 2.5)
 
     for idx, (topic, retrieval_sim) in enumerate(topics_with_similarity):
@@ -61,14 +64,17 @@ def score_and_rank(
             sem = cosine_similarity(query_vec, embed_text(topic.text_for_embedding()))
         sem = max(0.0, min(1.0, sem))
 
-        policy_weight, policy_reasons, policy_meta = policy_alignment(
-            topic_text=f"{topic.title} {' '.join(topic.keywords)}",
-            topic_policy_tags=topic.policy_tags,
-            query_text=query,
-        )
-        policy_weight = max(1.0, float(policy_weight))
-        # Prevent policy from overpowering semantics
-        policy_weight = min(policy_weight, policy_max)
+        if use_policy:
+            policy_weight, policy_reasons, policy_meta = policy_alignment(
+                topic_text=f"{topic.title} {' '.join(topic.keywords)}",
+                topic_policy_tags=topic.policy_tags,
+                query_text=query,
+            )
+            policy_weight = max(1.0, float(policy_weight))
+            # Prevent policy from overpowering semantics
+            policy_weight = min(policy_weight, policy_max)
+        else:
+            policy_weight, policy_reasons, policy_meta = 1.0, [], {"policies": [], "policy_ids": [], "domains": [], "intents": []}
         trend_score_value = float(trend_raw[idx])
 
         cf_val = float(cf_map.get(topic.topic_id, 0.0)) if (cf_map and not cold_start) else 0.0
