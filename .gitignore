@@ -3,3 +3,21 @@ backend_node/.env
 frontend/.env
 frontend/node_modules
 
+# Python virtualenvs and caches
+backend_py/.venv/
+backend_py/.pytest_cache/
+backend_py/.mypy_cache/
+backend_py/.ruff_cache/
+backend_py/__pycache__/
+backend_py/**/*.pyc
+backend_py/**/*.pyo
+backend_py/**/*.pyd
+backend_py/.env
+backend_py/.venv.bak/
+
+# Common local files
+.env
+.env.*
+*.log
+.DS_Store
+
