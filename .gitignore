@@ -1,24 +1,52 @@
-backend_node/node_modules
-backend_node/.env
-frontend/.env
-frontend/node_modules
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
 
-# Python virtualenvs and caches
+# Environment files and secrets
+.env
+.env.*
+*.local
+backend_node/.env
+backend_py/.env
+frontend/.env
+
+# Node / frontend build output
+node_modules/
+**/node_modules/
+dist/
+build/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Python virtualenvs, caches, and test artifacts
+.venv/
+venv/
+env/
+ENV/
 backend_py/.venv/
+backend_py/.venv.bak/
 backend_py/.pytest_cache/
 backend_py/.mypy_cache/
 backend_py/.ruff_cache/
+backend_py/.pyre/
+backend_py/.tox/
+backend_py/.nox/
 backend_py/__pycache__/
-backend_py/**/*.pyc
-backend_py/**/*.pyo
-backend_py/**/*.pyd
-backend_py/.env
-backend_py/.venv.bak/
+backend_py/**/*.py[cod]
+backend_py/.coverage
+backend_py/htmlcov/
+backend_py/.ipynb_checkpoints/
+
+# Generated project data
+backend_py/journals_master.json
+backend_py/pipeline_cache/
 backend_py/data/sample_papers/
 
-# Common local files
-.env
-.env.*
+# Logs
 *.log
-.DS_Store
 

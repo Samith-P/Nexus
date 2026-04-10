@@ -1,5 +1,3 @@
-# stage-6/insight_extractor.py
-
 from transformers import pipeline
 import re
 
@@ -7,96 +5,86 @@ import re
 class InsightExtractor:
 
     def __init__(self):
+        print("🔹 Loading FLAN-T5 base model (one-time)...")
         self.model = pipeline(
             "text2text-generation",
             model="google/flan-t5-base"
         )
 
-    # ---------------- PROMPT BUILDER ---------------- #
+    # ---------------- PROMPT ---------------- #
 
     def build_prompt(self, text, task):
 
         if task == "contributions":
             instruction = """
-Extract 2-4 clear contributions of the paper.
-Focus on what is NEW or proposed.
+Extract ONLY key contributions.
+Return 2-3 short phrases.
+No full sentences.
 """
 
         elif task == "methods":
             instruction = """
-Extract specific methods, techniques, or algorithms used.
+Extract ONLY method/technique names.
 
-IMPORTANT:
-Look for exact method names such as:
+Examples:
 - Masked Language Modeling
 - Next Sentence Prediction
 - Pre-training
 - Fine-tuning
-- Transformer architecture
 
-Do NOT give generic answers like "architecture".
+Only return names.
 """
 
         elif task == "results":
             instruction = """
-Extract 2-4 key numerical results.
+Extract ONLY key results with numbers.
 
-Focus on:
-- scores
-- accuracy
-- benchmarks
-- improvements
+Examples:
+- GLUE score 80.5%
+- MultiNLI accuracy 86%
 
-Return each result separately.
+Return 2-3 short points.
 """
 
-        else:
-            instruction = "Extract important information."
-
         prompt = f"""
-You are an expert AI researcher.
-
 {instruction}
-
-Return ONLY bullet points (2-4 points).
-Be specific and concise.
 
 Text:
 {text}
 """
         return prompt
 
-    # ---------------- MAIN EXTRACTOR ---------------- #
+    # ---------------- EXTRACT ---------------- #
 
     def extract(self, text, task):
 
         if not text.strip():
             return []
 
-        prompt = self.build_prompt(text, task)
+        # 🔥 SAFE INPUT LIMIT
+        safe_text = text[:800]
+
+        prompt = self.build_prompt(safe_text, task)
 
         try:
             output = self.model(
                 prompt,
-                max_length=400,
+                max_length=100,
                 do_sample=False
             )
 
             result = output[0]["generated_text"]
 
-            # ---------------- CLEAN OUTPUT ---------------- #
-
+            # 🔹 CLEAN OUTPUT
             lines = re.split(r"\n|•|-|\. ", result)
             cleaned = []
 
             for line in lines:
                 line = line.strip()
 
-                # remove empty / weak lines
-                if len(line) < 10:
+                if len(line) < 5 or len(line) > 80:
                     continue
 
-                # normalize spacing
                 line = re.sub(r"\s+", " ", line)
 
                 cleaned.append(line)
@@ -104,18 +92,17 @@ Text:
             # remove duplicates
             cleaned = list(dict.fromkeys(cleaned))
 
-            # ---------------- BOOST METHODS ---------------- #
-
+            # 🔥 METHOD BOOST (FINAL FIX)
             if task == "methods":
                 cleaned = self.boost_methods(text, cleaned)
 
-            return cleaned
+            return cleaned[:4]
 
         except Exception as e:
             print(f"❌ Error in {task}: {e}")
             return []
 
-    # ---------------- RULE-BASED BOOST ---------------- #
+    # ---------------- BOOST ---------------- #
 
     def boost_methods(self, text, extracted):
 
