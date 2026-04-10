@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import zlib
 import os
 from typing import Any, Dict, List, Optional
@@ -16,6 +17,8 @@ from datasets_loader import (
 from topic_kb import Topic
 from embedding import cosine_similarity, embed_text
 from gemini_polish import polish_topics_inplace
+
+import requests
 
 
 _BAD_TOPIC_TOKENS = {
@@ -116,7 +119,48 @@ def _normalize_query(query: str) -> str:
     q = re.sub(r"\bml\s*[-]?based\b", "Machine learning for", q, flags=re.IGNORECASE)
     q = re.sub(r"\bsystems\b", "applications", q, flags=re.IGNORECASE)
 
+    # Expand common abbreviations when they clearly refer to a domain.
+    # IMPORTANT: Only expand uppercase 'IT' (or 'I.T.') in sector/industry contexts
+    # to avoid rewriting the pronoun "it".
+    if re.search(r"\bI\.T\.\b", q):
+        q = re.sub(r"\bI\.T\.\b", "information technology", q)
+    if re.search(r"\bIT\b", q) and re.search(r"\b(sector|industry|services|companies|firms|organizations|organisation)\b", q, flags=re.IGNORECASE):
+        q = re.sub(r"\bIT\b", "information technology", q)
+
+    # Normalize common phrasing.
+    q = re.sub(r"\btech\s+sector\b", "technology sector", q, flags=re.IGNORECASE)
+    q = re.sub(r"\bit\s+sector\b", "information technology sector", q, flags=re.IGNORECASE)
+
     return q.strip()
+
+
+_IT_SECTOR_MARKERS = (
+    "information technology",
+    "it sector",
+    "it industry",
+    "technology sector",
+    "tech sector",
+    "it services",
+    "enterprise",
+    "software industry",
+    "software services",
+    "digital transformation",
+)
+
+
+def _it_sector_topics(query: str) -> List[str]:
+    # Query-aware anchors to keep AI+IT-sector queries on-domain even when
+    # semantic similarity is low (e.g., hashing embeddings).
+    _ = query
+    return [
+        "Impact of Artificial Intelligence on Productivity and Employment in the IT Sector",
+        "AI Adoption in IT Services: Drivers, Barriers, and Organizational Readiness",
+        "AI-Driven Automation in Software Development Lifecycles: Opportunities and Risks",
+        "AIOps in Enterprise IT: Incident Prediction, Root Cause Analysis, and Service Reliability",
+        "Governance, Ethics, and Compliance Frameworks for Enterprise AI in IT Organizations",
+        "Measuring Business Value of AI in IT Organizations: KPIs, ROI, and Operational Impact",
+        "AI for Cybersecurity in Enterprise IT Environments: Threat Detection and Response",
+    ]
 
 
 _TOURISM_MARKERS = (
@@ -231,11 +275,12 @@ def _tourism_topics(query: str) -> List[str]:
 
 
 def _ai_topics(_: str) -> List[str]:
+    # NOTE: This is a last-resort offline fallback for AI/ML queries.
     return [
-        "Student Performance Prediction Using Machine Learning Models",
-        "AI-Based Recommendation Systems: Methods and Evaluation",
-        "Computer Vision Applications in Healthcare: Techniques and Challenges",
-        "Natural Language Processing for Chatbots: Design and Evaluation",
+        "Artificial Intelligence Adoption in Industry: Challenges and Opportunities",
+        "AI Governance and Responsible AI in Organizations: Frameworks and Best Practices",
+        "AI-Driven Automation and Workforce Transformation: Impact Assessment",
+        "AIOps for IT Operations: Predictive Monitoring and Incident Management",
         "AI in Cybersecurity Threat Detection and Response",
     ]
 
@@ -569,6 +614,299 @@ _LOCATION_TOKENS = {
 }
 
 
+_GENERIC_QUERY_TOKENS = {
+    # Words that commonly cause cross-domain drift when used alone.
+    "smart",
+    "system",
+    "systems",
+    "framework",
+    "model",
+    "models",
+    "technology",
+    "technologies",
+    "innovation",
+    "integrated",
+    "integration",
+    "implementation",
+    "development",
+    "approach",
+    "application",
+    "applications",
+}
+
+
+def _query_core_tokens(query: str) -> List[str]:
+    toks = [t for t in _word_tokens(query) if t and len(t) >= 4]
+    ql = f" {(query or '').lower()} "
+    # Keep 'technology' when the user is explicitly talking about "information technology".
+    has_infotech = " information technology " in ql
+    out: List[str] = []
+    for t in toks:
+        if t in _LOCATION_TOKENS:
+            continue
+        if t in _GENERIC_QUERY_TOKENS:
+            if has_infotech and t == "technology":
+                out.append(t)
+                continue
+            continue
+        out.append(t)
+    # Deduplicate, keep order.
+    return list(dict.fromkeys(out))
+
+
+def _expand_queries(query: str, domain_hint: str) -> List[str]:
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    enabled = (os.getenv("QUERY_EXPANSION_ENABLED", "true") or "true").strip().lower() in {"1", "true", "yes", "y"}
+    if not enabled:
+        return [q]
+
+    variants: List[str] = [q]
+    if domain_hint == "education":
+        variants.extend([f"{q} edtech", f"{q} digital learning schools"])
+    elif domain_hint == "tourism":
+        variants.append(f"{q} sustainable tourism")
+    elif domain_hint == "ai":
+        ql = f" {(q or '').lower()} "
+        # If the query is about the IT sector / enterprise, add a couple targeted variants
+        # to improve retrieval coverage from academic APIs.
+        if any(m in ql for m in _IT_SECTOR_MARKERS):
+            variants.extend([f"{q} enterprise", f"{q} IT services", f"{q} digital transformation"])
+
+    # Deduplicate + cap to keep API calls bounded.
+    uniq: List[str] = []
+    seen: set[str] = set()
+    for v in variants:
+        vv = " ".join((v or "").split())
+        key = vv.lower()
+        if not vv or key in seen:
+            continue
+        seen.add(key)
+        uniq.append(vv)
+
+    try:
+        cap = int(os.getenv("QUERY_EXPANSION_MAX", "3") or 3)
+    except Exception:
+        cap = 3
+    return uniq[: max(1, min(cap, 5))]
+
+
+def _groq_summarize(query: str, language: str, recommended_topics: List[Dict[str, Any]]) -> Optional[str]:
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return None
+
+    model = (os.getenv("GROQ_MODEL", "llama-3.1-8b-instant") or "llama-3.1-8b-instant").strip()
+    try:
+        max_items = int(os.getenv("GROQ_SUMMARY_MAX_TOPICS", "5") or 5)
+    except Exception:
+        max_items = 5
+
+    items: List[Dict[str, Any]] = []
+    for t in (recommended_topics or [])[: max(1, max_items)]:
+        if not isinstance(t, dict):
+            continue
+        items.append(
+            {
+                "title": t.get("title"),
+                "domain": t.get("domain"),
+                "final_score_100": t.get("final_score_100"),
+                "reasons": (t.get("reasons") or [])[:5],
+            }
+        )
+
+    prompt = {"query": query, "language": language, "recommended_topics": items}
+
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "temperature": 0.2,
+                "max_tokens": 250,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Summarize the recommended topics concisely. Emphasize relevance to the query and flag any off-domain topic in one short clause.",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Summarize this JSON in 3-6 sentences. Keep it practical.\n\n"
+                            + json.dumps(prompt, ensure_ascii=False)
+                        ),
+                    },
+                ],
+            },
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
+        content = (((data.get("choices") or [])[0] or {}).get("message") or {}).get("content")
+        return (str(content).strip() if content else None) or None
+    except Exception:
+        return None
+
+
+def _groq_generate_topics(query: str, language: str, domain_hint: str, *, n: int = 10) -> List[Dict[str, Any]]:
+    """Generate research-style topics via Groq when all other candidate generation fails."""
+
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return []
+
+    model = (os.getenv("GROQ_MODEL", "llama-3.1-8b-instant") or "llama-3.1-8b-instant").strip()
+    try:
+        n = int(n)
+    except Exception:
+        n = 10
+    n = max(5, min(n, 12))
+
+    system = (
+        "You generate research paper topic titles. Output ONLY valid JSON."
+    )
+
+    user = {
+        "query": query,
+        "language": language,
+        "domain_hint": domain_hint,
+        "requirements": {
+            "count": n,
+            "title_style": "research paper / thesis topic",
+            "avoid": ["smart grid", "renewable energy", "solar", "wind"] if domain_hint == "education" else [],
+            "output_format": {
+                "type": "array",
+                "items": {"title": "string", "domain": "string", "keywords": "array[string]"},
+            },
+        },
+    }
+
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "temperature": 0.3,
+                "max_tokens": 700,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Generate topic titles as JSON only. Return an array with exactly 'count' items. "
+                            "No markdown, no extra keys.\n\n" + json.dumps(user, ensure_ascii=False)
+                        ),
+                    },
+                ],
+            },
+            timeout=25,
+        )
+        r.raise_for_status()
+        data = r.json()
+        content = (((data.get("choices") or [])[0] or {}).get("message") or {}).get("content")
+        raw = (str(content).strip() if content else "").strip()
+        if not raw:
+            return []
+
+        # Try to parse JSON strictly; if the model wrapped it, attempt to extract the first JSON array.
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            m = re.search(r"\[[\s\S]*\]", raw)
+            if not m:
+                return []
+            parsed = json.loads(m.group(0))
+
+        if not isinstance(parsed, list):
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for it in parsed:
+            if not isinstance(it, dict):
+                continue
+            title = str(it.get("title") or "").strip()
+            if not title:
+                continue
+            domain = str(it.get("domain") or "Other").strip() or "Other"
+            kws = it.get("keywords") or []
+            if not isinstance(kws, list):
+                kws = []
+            keywords = [str(x).strip().lower() for x in kws if str(x).strip()][:8]
+            out.append({"title": title, "domain": domain, "keywords": keywords})
+
+        return out[:n]
+    except Exception:
+        return []
+
+
+def _groq_polish_titles(query: str, language: str, titles: List[str]) -> List[str]:
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return titles
+
+    enabled = (os.getenv("GROQ_POLISH_ENABLED", "true") or "true").strip().lower() in {"1", "true", "yes", "y"}
+    if not enabled:
+        return titles
+
+    model = (os.getenv("GROQ_MODEL", "llama-3.1-8b-instant") or "llama-3.1-8b-instant").strip()
+    payload = {"query": query, "language": language, "titles": titles}
+
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "temperature": 0.2,
+                "max_tokens": 600,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You rewrite research topic titles to better match the user's query. "
+                            "Output ONLY JSON: an array of strings with the same length and order as input. "
+                            "Keep titles concise, academic, and on-domain."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": "Rewrite these titles (same count/order) as JSON only:\n\n" + json.dumps(payload, ensure_ascii=False),
+                    },
+                ],
+            },
+            timeout=25,
+        )
+        r.raise_for_status()
+        data = r.json()
+        content = (((data.get("choices") or [])[0] or {}).get("message") or {}).get("content")
+        raw = (str(content).strip() if content else "").strip()
+        if not raw:
+            return titles
+
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            m = re.search(r"\[[\s\S]*\]", raw)
+            if not m:
+                return titles
+            parsed = json.loads(m.group(0))
+
+        if not isinstance(parsed, list) or len(parsed) != len(titles):
+            return titles
+
+        out: List[str] = []
+        for i, it in enumerate(parsed):
+            s = str(it or "").strip()
+            out.append(s if s else titles[i])
+        return out
+    except Exception:
+        return titles
+
+
 _MARINE_QUERY_MARKERS = (
     "marine",
     "maritime",
@@ -775,7 +1113,22 @@ def generate_topics(payload: Dict[str, Any]) -> Dict[str, Any]:
     # We intentionally do NOT use data/topic_kb.json.
     # Candidate topics come from the academic APIs; policy signals come from Datasets/ PDFs/XLSX.
     if intent != "project":
-        api_topics = fetch_academic_topics(query_norm or str(query), limit=50)
+        domain_hint = _detect_domain(query_norm or str(query))
+        q_variants = _expand_queries(query_norm or str(query), domain_hint)
+        api_topics = []
+        seen_titles: set[str] = set()
+        for qx in q_variants:
+            for it in fetch_academic_topics(qx, limit=50) or []:
+                if not isinstance(it, dict):
+                    continue
+                title = str(it.get("title") or "").strip()
+                if not title:
+                    continue
+                k = title.lower()
+                if k in seen_titles:
+                    continue
+                seen_titles.add(k)
+                api_topics.append(it)
     if not api_topics:
         # Offline / blocked network fallback: synthesize researchable titles from policy phrases.
         # IMPORTANT: do NOT rank raw policy document titles as "topics" (they are policy signals only).
@@ -1101,6 +1454,21 @@ def generate_topics(payload: Dict[str, Any]) -> Dict[str, Any]:
             ]
         )
 
+    # Add IT/enterprise anchors for "AI in IT sector" / enterprise AI queries.
+    if any(k in ql for k in _AI_MARKERS) and any(m in ql for m in _IT_SECTOR_MARKERS):
+        api_topics = list(api_topics)
+        for t in _it_sector_topics(str(query)):
+            api_topics.append(
+                {
+                    "title": t,
+                    "domain": "Other",
+                    "citations": 40,
+                    "year": 2024,
+                    "source": "Seed",
+                    "_keywords": ["enterprise", "information technology", "industry", "adoption", "impact"],
+                }
+            )
+
     qv = embed_text(query_norm or str(query))
     # Hard semantic gate: prevents irrelevant candidates from being ranked/returned.
     # When we fall back to the hashing BoW embedding (256-d), cosine similarities are
@@ -1166,10 +1534,10 @@ def generate_topics(payload: Dict[str, Any]) -> Dict[str, Any]:
         sim = cosine_similarity(qv, embed_text(title))
         simf = float(sim)
 
-        # If the topic is semantically relevant, drive domain from topic/query text.
-        # (Policy domains are for explanations only, not for the topic's primary domain.)
+        # If the topic is semantically relevant, infer domain from the TOPIC itself.
+        # Do NOT include query text here: it can incorrectly force domains.
         if simf >= 0.45:
-            domain = _infer_domain(f"{title} {' '.join(keywords)} {query_norm or str(query)}")
+            domain = _infer_domain(f"{title} {' '.join(keywords)}")
 
         # Rebuild Topic with possibly-updated domain
         topic = Topic(
@@ -1192,6 +1560,58 @@ def generate_topics(payload: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         topics_with_similarity.append((topic, simf))
+
+    # Domain + noise filtering (keep non-empty). Goal: stop generic-token drift.
+    domain_hint = _detect_domain(query_norm or str(query))
+    q_core = set(_query_core_tokens(query_norm or str(query)))
+    # Avoid over-filtering on broad "meta" words (impact/sector/etc.).
+    meta_q = {
+        "impact",
+        "impacts",
+        "effect",
+        "effects",
+        "sector",
+        "sectors",
+        "industry",
+        "industries",
+        "role",
+        "future",
+        "trend",
+        "trends",
+        "overview",
+        "survey",
+        "review",
+        "study",
+        "studies",
+    }
+    q_core_strict = {t for t in q_core if t not in meta_q}
+
+    def _topic_tokens(t: Topic) -> set[str]:
+        return set(_word_tokens(f"{t.title} {' '.join(t.keywords or [])}"))
+
+    allow_energy = any(k in (query_norm or str(query) or "").lower() for k in ("energy", "solar", "wind", "grid", "ev", "battery", "power", "charging"))
+    filtered: List[tuple[Topic, float]] = []
+    for t, simf in topics_with_similarity:
+        tt = _topic_tokens(t)
+
+        if domain_hint == "education":
+            edu_tokens = set(_word_tokens(" ".join(_EDUCATION_MARKERS)))
+            if t.domain != "EdTech" and not (tt & edu_tokens):
+                continue
+            if not allow_energy and any(x in (t.title or "").lower() for x in ("grid", "solar", "wind", "battery", "energy", "power")):
+                continue
+
+        if domain_hint == "tourism":
+            if t.domain != "Tourism" and not (tt & {"tourism", "travel", "hospitality", "heritage", "ecotourism", "eco"}):
+                continue
+
+        if q_core_strict and not (tt & q_core_strict):
+            continue
+
+        filtered.append((t, simf))
+
+    if filtered:
+        topics_with_similarity = filtered
 
     topics_with_similarity.sort(key=lambda x: x[1], reverse=True)
     topics_with_similarity = topics_with_similarity[:50]
@@ -1234,9 +1654,124 @@ def generate_topics(payload: Dict[str, Any]) -> Dict[str, Any]:
         topics_with_similarity.sort(key=lambda x: x[1], reverse=True)
         topics_with_similarity = topics_with_similarity[:50]
 
+    if not topics_with_similarity and intent != "project":
+        # Final fallback: ask Groq to generate topics when strict filtering eliminates everything.
+        domain_hint = _detect_domain(query_norm or str(query))
+        gen = _groq_generate_topics(str(query), str(language), domain_hint, n=10)
+        if gen:
+            api_topics = []
+            for g in gen:
+                title = str(g.get("title") or "").strip()
+                if not title:
+                    continue
+                api_topics.append(
+                    {
+                        "title": title,
+                        "domain": str(g.get("domain") or _infer_domain(title)),
+                        "citations": 20,
+                        "year": 2024,
+                        "source": "Seed",
+                        "_keywords": list(g.get("keywords") or []),
+                    }
+                )
+
+            # Re-run the minimal candidate build pass.
+            qv = embed_text(query_norm or str(query))
+            topics_with_similarity = []
+            for item in api_topics:
+                title = str(item.get("title", "") or "").strip()
+                if not title:
+                    continue
+                year = int(item.get("year", 2024) or 2024)
+                citations = int(item.get("citations", 20) or 20)
+                domain = str(item.get("domain") or _infer_domain(title))
+                policy_tags = list(item.get("policy_tags") or match_policy_tags(title))
+
+                stopwords = {"the", "and", "for", "with", "using", "based", "from", "that", "this", "are", "was", "were", "through", "towards"}
+                title_words = [w.strip().lower() for w in re.split(r"[\s:,-]+", title) if len(w.strip()) > 3]
+                keywords = [w for w in title_words if w not in stopwords][:8]
+                raw_keywords = list(item.get("_keywords") or [])
+                for kw in raw_keywords:
+                    if isinstance(kw, str) and 2 <= len(kw) <= 50 and kw.count("\n") == 0 and kw.lower() not in keywords:
+                        keywords.append(kw.lower())
+                keywords = keywords[:8]
+
+                topic = Topic(
+                    topic_id=_topic_id_from_title(title, year),
+                    title=title,
+                    domain=domain,
+                    keywords=keywords,
+                    policy_tags=policy_tags,
+                    citations=citations,
+                    year=year,
+                )
+                simf = float(cosine_similarity(qv, embed_text(title)))
+                if not _looks_like_research_topic(title, query_norm or str(query)):
+                    continue
+                topics_with_similarity.append((topic, simf))
+
+            topics_with_similarity.sort(key=lambda x: x[1], reverse=True)
+            topics_with_similarity = topics_with_similarity[:50]
+
     if not topics_with_similarity:
         # Should be unreachable due to fallback, but keep as a final guard.
-        return {"topics": [], "warning": "No valid candidate topics after filtering"}
+        # If we still have nothing, return basic topics rather than an empty list.
+        fallback_titles = _generate_basic_topics(str(query))
+        topics_simple = [{"title": t, "score": 0.0} for t in fallback_titles[:10]]
+        return {"query": query, "language": language, "user_id": user_id, "topics": topics_simple, "recommended_topics": [], "warning": "Fallback used (no valid candidates after filtering)"}
+
+    # Ensure we have enough candidates to return at least N topics.
+    try:
+        min_return = int(os.getenv("TOPIC_MIN_RETURN", "5") or 5)
+    except Exception:
+        min_return = 5
+    min_return = max(3, min(min_return, 10))
+
+    if intent != "project" and len(topics_with_similarity) < min_return:
+        domain_hint = _detect_domain(query_norm or str(query))
+        gen = _groq_generate_topics(str(query), str(language), domain_hint, n=max(min_return, 8))
+        if gen:
+            existing_titles = {t.title.strip().lower() for t, _ in topics_with_similarity if getattr(t, "title", None)}
+            qv = embed_text(query_norm or str(query))
+            for g in gen:
+                title = str(g.get("title") or "").strip()
+                if not title:
+                    continue
+                if title.lower() in existing_titles:
+                    continue
+                if not _looks_like_research_topic(title, query_norm or str(query)):
+                    continue
+
+                year = 2024
+                citations = 20
+                domain = str(g.get("domain") or _infer_domain(title))
+                policy_tags = list(match_policy_tags(title))
+
+                stopwords = {"the", "and", "for", "with", "using", "based", "from", "that", "this", "are", "was", "were", "through", "towards"}
+                title_words = [w.strip().lower() for w in re.split(r"[\s:,-]+", title) if len(w.strip()) > 3]
+                keywords = [w for w in title_words if w not in stopwords][:8]
+                kws = g.get("keywords") or []
+                if isinstance(kws, list):
+                    for kw in kws:
+                        if isinstance(kw, str) and 2 <= len(kw) <= 50 and kw.count("\n") == 0 and kw.lower() not in keywords:
+                            keywords.append(kw.lower())
+                keywords = keywords[:8]
+
+                topic = Topic(
+                    topic_id=_topic_id_from_title(title, year),
+                    title=title,
+                    domain=domain,
+                    keywords=keywords,
+                    policy_tags=policy_tags,
+                    citations=citations,
+                    year=year,
+                )
+                simf = float(cosine_similarity(qv, embed_text(title)))
+                topics_with_similarity.append((topic, simf))
+                existing_titles.add(title.lower())
+
+            topics_with_similarity.sort(key=lambda x: x[1], reverse=True)
+            topics_with_similarity = topics_with_similarity[:50]
 
     ranked = score_and_rank(
         query=str(query),
@@ -1250,18 +1785,150 @@ def generate_topics(payload: Dict[str, Any]) -> Dict[str, Any]:
         use_policy=False if intent == "project" else True,
     )
 
-    # Optional post-processing: Gemini language polishing (read-only)
-    # This must NOT change the selected topics, ranking, or scores.
+    # Optional post-processing: LLM title polishing (Groq preferred, Gemini fallback).
+    # This may rewrite titles; keep order and scores stable.
     try:
-        polish_topics_inplace(ranked.get("recommended_topics") or [])
+        rec = list(ranked.get("recommended_topics") or [])
+        titles = [str(x.get("title") or "").strip() for x in rec]
+        if any(titles):
+            polished = _groq_polish_titles(str(query), str(language), titles)
+            if polished and len(polished) == len(rec):
+                for i, new_title in enumerate(polished):
+                    nt = (new_title or "").strip()
+                    if not nt:
+                        continue
+                    rec[i]["title"] = nt
+                    # Keep IDs consistent with displayed title.
+                    try:
+                        yr = int(rec[i].get("year", 2024) or 2024)
+                        rec[i]["topic_id"] = _topic_id_from_title(nt, yr)
+                    except Exception:
+                        pass
+                ranked["recommended_topics"] = rec
+            else:
+                polish_topics_inplace(ranked.get("recommended_topics") or [])
     except Exception:
-        pass
+        try:
+            polish_topics_inplace(ranked.get("recommended_topics") or [])
+        except Exception:
+            pass
 
     # Collapse duplicates produced by policy-matching expansions.
     ranked_topics = _dedupe_merge_recommended_topics(list(ranked.get("recommended_topics") or []))
     ranked["recommended_topics"] = ranked_topics
 
-    topics_simple = [{"title": t["title"], "score": t["final_score"]} for t in ranked_topics]
+    # Ensure we return a minimum number of topics for every query.
+    # If strict semantic filtering leaves fewer than N, pad with Groq-generated research topics.
+    if intent != "project" and len(ranked_topics) < min_return:
+        domain_hint = _detect_domain(query_norm or str(query))
+        gen = _groq_generate_topics(str(query), str(language), domain_hint, n=max(min_return, 8))
+
+        # If Groq isn't available/returns too little, fall back to offline generated titles.
+        if not gen or len(gen) < min_return:
+            fallback = _generate_basic_topics(str(query))
+            for t in fallback:
+                gen.append({"title": t, "domain": _infer_domain(t), "keywords": []})
+
+        existing_titles = {str(x.get("title", "")).strip().lower() for x in ranked_topics}
+        existing_ids = {str(x.get("topic_id", "")).strip() for x in ranked_topics}
+
+        for g in gen:
+            if len(ranked_topics) >= min_return:
+                break
+
+            title = str(g.get("title") or "").strip()
+            if not title:
+                continue
+            if title.lower() in existing_titles:
+                continue
+            if not _looks_like_research_topic(title, query_norm or str(query)):
+                continue
+
+            domain = str(g.get("domain") or _infer_domain(title))
+            kws = g.get("keywords") or []
+            if not isinstance(kws, list):
+                kws = []
+            keywords = [str(x).strip().lower() for x in kws if str(x).strip()][:8]
+            if not keywords:
+                title_words = [w.strip().lower() for w in re.split(r"[\s:,-]+", title) if len(w.strip()) > 3]
+                stopwords = {"the", "and", "for", "with", "using", "based", "from", "that", "this", "are", "was", "were", "through", "towards"}
+                keywords = [w for w in title_words if w not in stopwords][:8]
+
+            year = 2024
+            topic_id = _topic_id_from_title(title, year)
+            if topic_id in existing_ids:
+                continue
+
+            ranked_topics.append(
+                {
+                    "topic_id": topic_id,
+                    "title": title,
+                    "domain": domain,
+                    "keywords": keywords,
+                    "policy_tags": [],
+                    "citations": 20,
+                    "year": year,
+                    "semantic_similarity": 0.0,
+                    "policy_weight": 1.0,
+                    "trend_score": 0.0,
+                    "keyword_score": 0.0,
+                    "policy_meta": {"policies": [], "policy_ids": [], "domains": [], "intents": []},
+                    "final_score": 0.0,
+                    "final_score_100": 0.0,
+                    "reasons": ["Generated fallback topic"],
+                }
+            )
+            existing_titles.add(title.lower())
+            existing_ids.add(topic_id)
+
+        # Polish padded titles too (optional).
+        try:
+            titles = [str(x.get("title") or "").strip() for x in ranked_topics]
+            polished = _groq_polish_titles(str(query), str(language), titles)
+            if polished and len(polished) == len(ranked_topics):
+                for i, nt in enumerate(polished):
+                    new_title = (nt or "").strip()
+                    if not new_title:
+                        continue
+                    ranked_topics[i]["title"] = new_title
+                    try:
+                        yr = int(ranked_topics[i].get("year", 2024) or 2024)
+                        ranked_topics[i]["topic_id"] = _topic_id_from_title(new_title, yr)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        ranked["recommended_topics"] = ranked_topics
+
+    topics_simple = [
+        {"title": str(t.get("title") or "").strip(), "score": float(t.get("final_score") or 0.0)}
+        for t in ranked_topics
+        if str(t.get("title") or "").strip()
+    ]
+
+    # Always return at least N non-empty topic titles.
+    if len(topics_simple) < min_return:
+        existing = {str(x.get("title", "")).strip().lower() for x in topics_simple}
+        domain_hint = _detect_domain(query_norm or str(query))
+        gen = _groq_generate_topics(str(query), str(language), domain_hint, n=max(min_return, 8))
+        if not gen:
+            fallback = _generate_basic_topics(str(query))
+            gen = [{"title": t, "domain": _infer_domain(t), "keywords": []} for t in fallback]
+
+        for g in gen:
+            if len(topics_simple) >= min_return:
+                break
+            title = str(g.get("title") or "").strip()
+            if not title:
+                continue
+            if title.lower() in existing:
+                continue
+            topics_simple.append({"title": title, "score": 0.0})
+            existing.add(title.lower())
+
+    # Keep the lightweight alias in sync with recommended_topics.
+    # (No blank titles are ever appended.)
 
     # Ensure project-mode always returns at least 5 ideas.
     if intent == "project" and len(topics_simple) < 5:
@@ -1286,6 +1953,16 @@ def generate_topics(payload: Dict[str, Any]) -> Dict[str, Any]:
         # Spec-friendly alias
         "topics": topics_simple,
     }
+
+    # Optional: summarize output using Groq (OpenAI-compatible endpoint).
+    try:
+        enabled = (os.getenv("GROQ_SUMMARY_ENABLED", "true") or "true").strip().lower() in {"1", "true", "yes", "y"}
+        if enabled:
+            summary = _groq_summarize(str(query), str(language), list(resp.get("recommended_topics") or []))
+            if summary:
+                resp["summary"] = summary
+    except Exception:
+        pass
 
     if used_fallback and intent != "project":
         resp["warning"] = "Fallback used (query normalization / basic topic generator)"
