@@ -14,6 +14,7 @@ backend_py/**/*.pyo
 backend_py/**/*.pyd
 backend_py/.env
 backend_py/.venv.bak/
+backend_py/data/sample_papers/
 
 # Common local files
 .env
