@@ -162,15 +162,19 @@ async def export_report(task_id: str):
     if task.status != "completed" or task.result is None:
         raise HTTPException(status_code=202, detail="Results not ready yet.")
 
-    exporter = ReportExporter()
-    output_path = os.path.join(tempfile.gettempdir(), f"nexus_report_{task_id}.pdf")
-    exporter.export_pdf(task.result, output_path)
+    try:
+        exporter = ReportExporter()
+        output_path = os.path.join(tempfile.gettempdir(), f"nexus_report_{task_id}.pdf")
+        exporter.export_pdf(task.result, output_path)
 
-    return FileResponse(
-        path=output_path,
-        filename="literature_review_report.pdf",
-        media_type="application/pdf",
-    )
+        return FileResponse(
+            path=output_path,
+            filename="literature_review_report.pdf",
+            media_type="application/pdf",
+        )
+    except Exception as e:
+        logger.error(f"PDF export failed: {e}")
+        raise HTTPException(status_code=500, detail=f"PDF export failed: {str(e)}")
 
 
 @router.post("/review/sync", response_model=LiteratureReviewResult)

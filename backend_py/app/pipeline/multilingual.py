@@ -176,8 +176,10 @@ class IndicBARTSummarizer:
             )
 
             with torch.no_grad():
+                # Remove token_type_ids — IndicBART doesn't use them
+                gen_inputs = {k: v for k, v in inputs.items() if k != "token_type_ids"}
                 outputs = self.model.generate(
-                    **inputs,
+                    **gen_inputs,
                     max_length=max_length,
                     num_beams=2,  # CPU-friendly beam count
                     early_stopping=True,

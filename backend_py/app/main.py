@@ -1,6 +1,9 @@
 # app/main.py
 # FastAPI entry point for the Literature Review Engine
 
+from dotenv import load_dotenv
+load_dotenv()  # Load .env before anything else
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
