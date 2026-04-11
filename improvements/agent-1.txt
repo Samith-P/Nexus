@@ -1,0 +1,32 @@
+Literature Review Engine PoC Alignment Plan
+Summary
+You already have a solid single-paper prototype: parse, clean, section, chunk, summarize, extract insights, and generate gaps in [section_detector.py](D:/volume E/AP-Nexus/Nexus-journal/backend_py/stage-3/section_detector.py#L5), [summarizer.py](D:/volume E/AP-Nexus/Nexus-journal/backend_py/stage-5/summarizer.py#L6), [insight_extractor.py](D:/volume E/AP-Nexus/Nexus-journal/backend_py/stage-6/insight_extractor.py#L5), and [gap_detector.py](D:/volume E/AP-Nexus/Nexus-journal/backend_py/stage-7/gap_detector.py#L5).
+The current mismatch is scope, not effort: your documentation promises a multilingual literature-review engine that synthesizes papers and maps related work, but the code is still a staged, mostly single-paper analysis prototype.
+For the hackathon PoC, the right goal is not “build everything from the doc.” It is “make one literature-review feature feel complete, believable, and demo-ready.”
+Key Changes
+Keep: PDF parsing, text cleaning, chunking, and the staged pipeline. That work is useful and should stay.
+Keep but improve: section extraction. Replace keyword-only lowercased slicing with heading-aware extraction that preserves original text and falls back safely when headings are missing.
+Add: one orchestrator for the feature, e.g. run_literature_review(pdf_paths, query=None, output_language="en"), instead of separate stage scripts.
+Add: structured paper outputs: objective, method, dataset/domain, key findings, limitations, and evidence snippet/page.
+Add: cross-paper synthesis as the main deliverable. Compare 2-3 papers, show common themes, differences, and a literature matrix.
+Add: related-works suggestions using embeddings on local/sample papers first; later enrich with CrossRef or Semantic Scholar if available.
+Add: evidence-backed research gaps derived from what multiple papers do not cover, not from generic always-on rules.
+Add: one creative output for demo value: a “research gap map” or “literature comparison table” that can go straight into your pitch/demo.
+Cut or deprioritize: BERT-specific hardcoded method boosts in [insight_extractor.py](D:/volume E/AP-Nexus/Nexus-journal/backend_py/stage-6/insight_extractor.py#L107). They make the engine look overfit to one sample paper.
+Cut or deprioritize: generic fixed gaps in [gap_detector.py](D:/volume E/AP-Nexus/Nexus-journal/backend_py/stage-7/gap_detector.py#L56). They are not trustworthy enough for a literature-review feature.
+Cut or deprioritize: claims of multilingual output, translation, related-work retrieval, and full integration unless they are actually wired in. For this PoC, a clean English-first engine is better than overclaiming.
+Fix: reproducibility. Add a dependency manifest and a single documented entrypoint; right now the stage scripts are cwd-sensitive and the local environment is missing PyMuPDF.
+Public Interfaces
+Input: list of PDF files, optional research theme/query, optional output language.
+Output JSON: paper_summaries, comparison_matrix, common_themes, research_gaps, related_works, evidence_spans, export_summary.
+If you expose an API later, use one user-facing route such as POST /literature-review/analyze.
+Test Plan
+One well-structured paper returns summary, insights, and evidence spans.
+One weakly structured paper still produces usable fallback output.
+Two or three papers on the same topic produce a real comparison matrix and non-generic gaps.
+Non-BERT papers do not trigger BERT-specific method labels.
+Fresh setup works from documented commands without path/import issues.
+Assumptions
+Scope is only the literature-review engine, not plagiarism, journal recommendation, SAML, or institutional analytics.
+“Closer to documentation” means matching the promised behavior at PoC level, not full production multilingual infrastructure.
+Best demo story: upload papers, get structured summaries, compare literature, find research gaps, export review-ready output.

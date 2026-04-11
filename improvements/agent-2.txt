@@ -1,0 +1,75 @@
+Current Status
+You have built a clear 7-stage prototype pipeline that is good for a PoC:
+
+PDF extraction in pdf_parser.py
+Cleaning in text_cleaner.py
+Section split in section_detector.py
+Chunking and embeddings in chunker.py and embedder.py
+Summarization in summarizer.py
+Insight extraction in insight_extractor.py
+Gap detection in gap_detector.py
+That architecture is already aligned with your documentation style: modular and pipeline-oriented.
+
+What You Did Well
+
+Good decomposition into independent stages. Easy to debug and demo.
+Practical two-level summarization idea in summarizer.py.
+Hybrid gap idea (rule-based + LLM augmentation) in gap_detector.py.
+Reusable stage scripts for progressive validation in test_stage1.py through test_stage7.py.
+What Is Missing (to match your documentation better)
+
+Multilingual reality gap.
+Documentation says Telugu/Hindi/Urdu/Sanskrit/English, but pipeline currently operates as mostly English heuristics and English prompts.
+Literature-related works mapping.
+Your docs promise related works mapping and federated retrieval (CrossRef/Semantic Scholar), but no such integration appears in the stage code.
+Citation-aware output.
+The feature currently gives summaries/insights but not structured citation links, DOI-enriched evidence, or source-grounded references.
+Quality and confidence metrics.
+No measurable score for summary quality, coverage, or extraction confidence.
+Production API integration.
+Pipeline is script-style testing; app.py is empty. No service endpoint for frontend.
+Error and fallback strategy.
+If sections are not found well, output quality can degrade, but there is no robust fallback orchestration.
+Real tests are missing.
+Current test files are executable demos, not assertion-based automated tests.
+What You Added That Is Extra (for only Literature Review feature)
+
+Some stage-7 gap-detection logic may be out of scope if you are strictly presenting only literature review automation.
+Embedding generation in embedder.py is currently not connected to retrieval/ranking in this feature flow, so it looks unfinished from evaluator perspective.
+Very broad claims in documentation (full multilingual + federated APIs + compliance depth) are beyond what this one feature code currently proves.
+What To Improve First (high impact, low risk)
+
+Preserve text case in section detection.
+Current section detector lowercases full text, which can hurt downstream output quality and presentation fidelity.
+Replace naive section find with heading-aware parsing.
+Current keyword find can match random body content and split wrongly.
+Convert scripts to one callable orchestrator plus one API endpoint.
+So judges can test feature reliably from UI/backend.
+Add evidence-backed output format:
+Summary, Key Methods, Claimed Results, Research Gaps, and Evidence Table with source snippet/page.
+Add assertion tests for each stage:
+Input fixture, expected section presence, expected non-empty summary, expected gap count range.
+Align model claims with code.
+Either switch code toward Indic stack or soften doc wording to current actual models.
+Creative Upgrade Ideas (to stand out in hackathon)
+
+Contradiction Lens:
+Show where two papers disagree on results or methods.
+Novelty Opportunity Map:
+Auto-generate research opportunities as matrix: Domain x Method x Dataset gap.
+Reviewer Mode:
+Export one-page literature brief as if for a publication committee.
+Language Bridge View:
+Left side original snippet, right side translated academic rewrite.
+Exactly How To Make Docs Closer To Current Code
+
+In feature description, state current PoC model stack honestly: DistilBART + FLAN-T5 + MiniLM.
+Mark multilingual and API federation as next-phase or partial.
+Keep claims measurable:
+For example, summary latency, extraction accuracy on sample set, and section detection precision.
+Add one small architecture figure focused only on literature review engine, not full platform.
+Recommended One-Feature Scope for Submission (clean and correct)
+
+Keep: Stage 1, 2, 3, 5, 6 as core Literature Review Engine.
+Optional: Stage 4 embeddings only if used for related works retrieval.
+Optional/Next: Stage 7 gap detection as advanced add-on.
