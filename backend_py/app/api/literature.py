@@ -1,9 +1,9 @@
 # app/api/literature.py
 # Literature Review API endpoints
+# Supports multilingual output via output_language parameter.
 
 import os
 import uuid
-import shutil
 import tempfile
 from typing import Optional
 
@@ -11,6 +11,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Background
 from fastapi.responses import FileResponse
 
 from app.pipeline.orchestrator import LiteratureReviewOrchestrator
+from app.pipeline.multilingual import SUPPORTED_LANGUAGES
 from app.models.schemas import LiteratureReviewResult, ReviewStatusResponse
 from app.utils.export import ReportExporter
 from app.utils.logger import get_logger
@@ -34,7 +35,13 @@ def _get_orchestrator() -> LiteratureReviewOrchestrator:
     return _orchestrator
 
 
-def _run_analysis(task_id: str, pdf_paths: list[str], query: Optional[str], fetch_related: bool):
+def _run_analysis(
+    task_id: str,
+    pdf_paths: list[str],
+    query: Optional[str],
+    fetch_related: bool,
+    output_language: str,
+):
     """Background task for running the analysis pipeline."""
     try:
         _tasks[task_id].status = "processing"
@@ -43,7 +50,12 @@ def _run_analysis(task_id: str, pdf_paths: list[str], query: Optional[str], fetc
         orchestrator = _get_orchestrator()
         _tasks[task_id].progress = "Analyzing papers..."
 
-        result = orchestrator.run(pdf_paths, query=query, fetch_related=fetch_related)
+        result = orchestrator.run(
+            pdf_paths,
+            query=query,
+            fetch_related=fetch_related,
+            output_language=output_language,
+        )
 
         _tasks[task_id].status = "completed"
         _tasks[task_id].result = result
@@ -55,7 +67,6 @@ def _run_analysis(task_id: str, pdf_paths: list[str], query: Optional[str], fetc
         _tasks[task_id].status = "failed"
         _tasks[task_id].error = str(e)
     finally:
-        # Cleanup temp files
         for path in pdf_paths:
             try:
                 os.remove(path)
@@ -63,25 +74,37 @@ def _run_analysis(task_id: str, pdf_paths: list[str], query: Optional[str], fetc
                 pass
 
 
+@router.get("/languages")
+async def list_languages():
+    """List supported output languages."""
+    return {"languages": SUPPORTED_LANGUAGES}
+
+
 @router.post("/review", response_model=ReviewStatusResponse)
 async def start_review(
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     query: Optional[str] = Form(None),
+    output_language: str = Form("en"),
     fetch_related_works: bool = Form(True),
 ):
     """Upload PDFs and start a literature review analysis.
 
     - Upload 1-5 PDF files.
     - Optionally provide a research query/theme.
+    - Set output_language to get results in Indian languages (hi, te, ur, sa, etc.).
     - Returns a task_id to poll for results.
     """
     if not files:
         raise HTTPException(status_code=400, detail="At least one PDF file is required.")
     if len(files) > 5:
         raise HTTPException(status_code=400, detail="Maximum 5 files allowed.")
+    if output_language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported language '{output_language}'. Supported: {list(SUPPORTED_LANGUAGES.keys())}",
+        )
 
-    # Validate and save uploaded files to temp
     pdf_paths = []
     upload_dir = os.path.join(tempfile.gettempdir(), "nexus_uploads")
     os.makedirs(upload_dir, exist_ok=True)
@@ -96,7 +119,6 @@ async def start_review(
             buf.write(content)
         pdf_paths.append(temp_path)
 
-    # Create task
     task_id = uuid.uuid4().hex
     _tasks[task_id] = ReviewStatusResponse(
         task_id=task_id,
@@ -104,10 +126,11 @@ async def start_review(
         progress="Waiting to start...",
     )
 
-    # Run in background
-    background_tasks.add_task(_run_analysis, task_id, pdf_paths, query, fetch_related_works)
+    background_tasks.add_task(
+        _run_analysis, task_id, pdf_paths, query, fetch_related_works, output_language
+    )
 
-    logger.info(f"Task {task_id} queued for {len(pdf_paths)} paper(s).")
+    logger.info(f"Task {task_id} queued for {len(pdf_paths)} paper(s), lang={output_language}.")
     return _tasks[task_id]
 
 
@@ -154,14 +177,26 @@ async def export_report(task_id: str):
 async def review_sync(
     files: list[UploadFile] = File(...),
     query: Optional[str] = Form(None),
+    output_language: str = Form("en"),
     fetch_related_works: bool = Form(True),
 ):
     """Synchronous review — waits for completion and returns results directly.
 
     Use for small reviews (1-2 papers). For larger reviews, use /review (async).
+
+    Args:
+        files: 1-5 PDF files to analyze.
+        query: Optional research query/theme.
+        output_language: Output language code (en, hi, te, ur, sa, bn, ta, ml, kn, mr, gu, pa, or).
+        fetch_related_works: Whether to search for related papers.
     """
     if not files:
         raise HTTPException(status_code=400, detail="At least one PDF file is required.")
+    if output_language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported language '{output_language}'. Supported: {list(SUPPORTED_LANGUAGES.keys())}",
+        )
 
     pdf_paths = []
     upload_dir = os.path.join(tempfile.gettempdir(), "nexus_uploads")
@@ -178,7 +213,12 @@ async def review_sync(
 
     try:
         orchestrator = _get_orchestrator()
-        result = orchestrator.run(pdf_paths, query=query, fetch_related=fetch_related_works)
+        result = orchestrator.run(
+            pdf_paths,
+            query=query,
+            fetch_related=fetch_related_works,
+            output_language=output_language,
+        )
         return result
     finally:
         for p in pdf_paths:

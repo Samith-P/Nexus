@@ -97,5 +97,5 @@ class CrossRefClient:
     @staticmethod
     def extract_dois_from_text(text: str) -> list[str]:
         """Extract DOI strings from paper text."""
-        pattern = r"10\.\d{4,9}/[-._;()/:A-Z0-9]+"
+        pattern = r"10\.\d{4,9}/[-._;/:A-Z0-9]+[A-Z0-9]"
         return list(set(re.findall(pattern, text, re.IGNORECASE)))

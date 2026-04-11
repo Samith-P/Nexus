@@ -3,7 +3,7 @@
 
 from pydantic import BaseModel, Field
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class EvidenceSpan(BaseModel):
@@ -61,7 +61,7 @@ class LiteratureReviewResult(BaseModel):
     research_gaps: list[str] = Field(default_factory=list)
     related_works: list[RelatedWork] = Field(default_factory=list)
     processing_time_seconds: float = 0.0
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ReviewRequest(BaseModel):

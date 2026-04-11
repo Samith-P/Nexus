@@ -1,8 +1,9 @@
 # app/pipeline/orchestrator.py
 # Pipeline orchestrator — single entry point that chains all stages.
-# Optimized for CPU-only (Ryzen 5 5600H, 14GB RAM, no GPU):
+# CPU-optimized (Ryzen 5 5600H, 14GB RAM, no GPU):
 #   - Shares FLAN-T5 model between InsightExtractor and GapDetector
 #   - Lazy loads heavy models only when needed
+#   - Supports multilingual output via IndicBERT/IndicBART
 
 import time
 from typing import Optional
@@ -16,6 +17,7 @@ from app.pipeline.embedder import Embedder
 from app.pipeline.summarizer import Summarizer
 from app.pipeline.insight_extractor import InsightExtractor
 from app.pipeline.gap_detector import GapDetector
+from app.pipeline.translator import TranslationOutputLayer
 from app.storage.vector_store import VectorStore
 from app.integrations.semantic_scholar import SemanticScholarClient
 from app.integrations.crossref import CrossRefClient
@@ -37,24 +39,40 @@ class LiteratureReviewOrchestrator:
     """Orchestrates the full literature review pipeline.
 
     CPU-optimized: shares FLAN-T5 across insight_extractor and gap_detector.
+    Supports multilingual output via IndicBERT embeddings + IndicBART translation.
     """
 
-    def __init__(self):
+    def __init__(self, use_indicbert: bool = False):
+        """Initialize pipeline components.
+
+        Args:
+            use_indicbert: If True, use IndicBERT for embeddings instead of MiniLM.
+                          Useful for Indian language papers. Loads lazily.
+        """
         logger.info("Initializing pipeline components (CPU-optimized)...")
 
         # Lightweight — load immediately
         self.chunker = TextChunker(max_words=400, overlap_sentences=2)
-        self.embedder = Embedder()
+
+        # Embedder: IndicBERT for multilingual or MiniLM for English
+        if use_indicbert:
+            logger.info("Using IndicBERT for multilingual embeddings...")
+            from app.pipeline.multilingual import IndicBERTEmbedder
+            self.embedder = IndicBERTEmbedder()
+            embed_dim = 768
+        else:
+            self.embedder = Embedder()
+            embed_dim = 384
+
         self.summarizer = Summarizer()
 
         # Share one FLAN-T5 model between insight extractor and gap detector
-        # Saves ~250MB RAM on CPU-only systems
         logger.info("Loading shared FLAN-T5 model for insights + gaps...")
         shared_flan = hf_pipeline("text2text-generation", model="google/flan-t5-base")
         self.insight_extractor = InsightExtractor(shared_model=shared_flan)
         self.gap_detector = GapDetector(shared_model=shared_flan)
 
-        self.vector_store = VectorStore(dimension=384)
+        self.vector_store = VectorStore(dimension=embed_dim)
         self.scholar = SemanticScholarClient()
         self.crossref = CrossRefClient()
 
@@ -205,6 +223,7 @@ class LiteratureReviewOrchestrator:
         pdf_paths: list[str],
         query: Optional[str] = None,
         fetch_related: bool = True,
+        output_language: str = "en",
     ) -> LiteratureReviewResult:
         """Run the complete literature review pipeline.
 
@@ -212,12 +231,15 @@ class LiteratureReviewOrchestrator:
             pdf_paths: List of paths to PDF files.
             query: Optional research query/theme.
             fetch_related: Whether to fetch related works from APIs.
+            output_language: Language code for output (en, hi, te, ur, sa, etc.).
 
         Returns:
             LiteratureReviewResult with all analyses, comparisons, and gaps.
         """
         start_time = time.time()
         logger.info(f"Starting literature review for {len(pdf_paths)} paper(s)...")
+        if output_language != "en":
+            logger.info(f"Output language: {output_language}")
 
         # Analyze each paper
         analyses = []
@@ -255,14 +277,26 @@ class LiteratureReviewOrchestrator:
             except Exception as e:
                 logger.warning(f"Related works fetch failed: {e}")
 
-        elapsed = time.time() - start_time
-        logger.info(f"Literature review complete in {elapsed:.1f}s.")
-
-        return LiteratureReviewResult(
+        # Build result
+        result = LiteratureReviewResult(
             papers=analyses,
             comparison_matrix=comparison,
             common_themes=common_themes,
             research_gaps=all_gaps,
             related_works=related_works,
-            processing_time_seconds=round(elapsed, 2),
+            processing_time_seconds=0,  # updated below
         )
+
+        # Translation output layer (Phase 2 — IndicBART)
+        if output_language != "en":
+            try:
+                translator = TranslationOutputLayer(target_lang=output_language)
+                translator.translate_review_result(result)
+            except Exception as e:
+                logger.warning(f"Translation to {output_language} failed, returning English: {e}")
+
+        elapsed = time.time() - start_time
+        result.processing_time_seconds = round(elapsed, 2)
+        logger.info(f"Literature review complete in {elapsed:.1f}s.")
+
+        return result
