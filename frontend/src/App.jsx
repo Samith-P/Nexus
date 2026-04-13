@@ -1,14 +1,20 @@
-import { useState } from 'react'
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import Home from './pages/Home';
+import JournalRecommendation   from './pages/JournalRecommendation';
+import TopicSelection          from './pages/TopicSelection';
+import LiteratureReview          from './pages/LiteratureReview';
+import PlagiarismDetection     from './pages/PlagiarismDetection';
 
-
-function App() {
-  const [count, setCount] = useState(0)
-
+export default function App() {
   return (
-    <>
-    Hello world
-    </>
-  )
+    <BrowserRouter>
+      <Routes>
+        <Route path="/"                          element={<Home />} />
+        <Route path="/journal-recommendation"    element={<JournalRecommendation />} />
+        <Route path="/topic-selection"           element={<TopicSelection />} />
+        <Route path="/literature-recommendation" element={<LiteratureReview />} />
+        <Route path="/plagiarism-detection"      element={<PlagiarismDetection />} />
+      </Routes>
+    </BrowserRouter>
+  );
 }
-
-export default App

@@ -7,8 +7,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .embedding import cosine_similarity, embed_text
-from .qdrant_store import ensure_collection, qdrant_enabled, search as qdrant_search, upsert_topics
+try:
+    from .embedding import cosine_similarity, embed_text
+    from .qdrant_store import ensure_collection, qdrant_enabled, search as qdrant_search, upsert_topics
+except ImportError:
+    from embedding import cosine_similarity, embed_text
+    from qdrant_store import ensure_collection, qdrant_enabled, search as qdrant_search, upsert_topics
 
 
 _STOPWORDS = {
@@ -498,9 +502,13 @@ def index_policies_into_qdrant() -> bool:
         return False
 
     points: List[Tuple[str, Sequence[float], Dict]] = []
+    skipped_dim = 0
     for r in _embedded_policies():
         vec = r.get("vector")
-        if not vec or len(vec) != vec_size:
+        if not vec:
+            continue
+        if len(vec) != vec_size:
+            skipped_dim += 1
             continue
         payload = {
             "policy_name": r.get("policy_name", ""),
@@ -511,7 +519,14 @@ def index_policies_into_qdrant() -> bool:
         }
         points.append((r.get("policy_id", r.get("policy_name", "")), vec, payload))
 
+    if skipped_dim:
+        print(f"[datasets_loader] WARNING: {skipped_dim} policy record(s) skipped — "
+              f"vector dim mismatch (expected {vec_size}, got {skipped_dim} mismatches). "
+              f"Check QDRANT_VECTOR_SIZE env var vs actual model output.")
+
     if not points:
+        print("[datasets_loader] index_policies_into_qdrant: No valid points to upsert. "
+              "Policies folder may be empty or all vectors had wrong dimension.")
         return False
     return upsert_topics(points, collection_name=_POLICIES_COLLECTION)
 

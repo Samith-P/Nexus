@@ -18,7 +18,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 def gemini_enabled() -> bool:
     # Default behavior: enabled if GEMINI_API_KEY exists.
     # Optional opt-out: set GEMINI_POLISH=0/false/off.
-    api_key_present = bool((os.getenv("GEMINI_API_KEY") or "").strip())
+    api_key_present = bool((os.getenv("GROK_API_KEY") or "").strip())
     if not api_key_present:
         return False
     if os.getenv("GEMINI_POLISH") is None:
@@ -99,8 +99,8 @@ def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
         obj = json.loads(t)
         if isinstance(obj, dict):
             return obj
-    except Exception:
-        pass
+    except Exception as e:
+        print("ERROR:", e)
 
     # Fallback: find first balanced {...} region and parse it.
     start = t.find("{")
@@ -143,7 +143,7 @@ def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
 
 @lru_cache(maxsize=256)
 def _polish_cached(title: str, reasons_json: str) -> Optional[Dict[str, str]]:
-    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    api_key = (os.getenv("GROK_API_KEY") or "").strip()
     if not api_key:
         return None
 

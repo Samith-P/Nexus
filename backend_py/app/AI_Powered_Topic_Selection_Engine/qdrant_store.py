@@ -5,6 +5,8 @@ from dataclasses import asdict
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import uuid
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.getenv(name)
@@ -99,8 +101,31 @@ def upsert_topics(
     try:
         from qdrant_client.models import PointStruct  # type: ignore
 
+        def to_qdrant_point_id(raw_id: object) -> str | int:
+            """Convert arbitrary IDs to Qdrant-compatible point IDs.
+
+            Qdrant accepts either an unsigned integer or a UUID string.
+            """
+
+            s = str(raw_id).strip()
+            if s.isdigit():
+                try:
+                    return int(s)
+                except Exception:
+                    pass
+
+            try:
+                return str(uuid.UUID(s))
+            except Exception:
+                pass
+
+            return str(uuid.uuid5(uuid.NAMESPACE_URL, f"topic_engine:{s}"))
+
         name = _collection_name(collection_name)
-        pts = [PointStruct(id=pid, vector=list(vec), payload=payload) for pid, vec, payload in points]
+        pts = [
+            PointStruct(id=to_qdrant_point_id(pid), vector=list(vec), payload=payload)
+            for pid, vec, payload in points
+        ]
         cli.upsert(collection_name=name, points=pts)
         return True
     except Exception:

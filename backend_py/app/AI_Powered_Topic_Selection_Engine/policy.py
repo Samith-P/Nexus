@@ -5,7 +5,10 @@ from typing import Dict, List, Tuple
 
 import os
 
-from .datasets_loader import build_policy_weight_table_from_datasets, search_policies
+try:
+    from .datasets_loader import build_policy_weight_table_from_datasets, search_policies
+except ImportError:
+    from datasets_loader import build_policy_weight_table_from_datasets, search_policies
 
 
 def _clean_intent_text(text: str, max_length: int = 120) -> str:

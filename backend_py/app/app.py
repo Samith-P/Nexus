@@ -3,12 +3,29 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import sys
 from pathlib import Path
+from Journal_recommendation.journal_routes import router
+from literature_review.api import literature
+from plagiarism_engine.api import plagiarism_api
 
-# Add engine path for imports
-sys.path.insert(0, str(Path(__file__).parent / "AI‑Powered-Topic-Selection-Engine"))
 
-import AI_Powered_Topic_Selection_Engine.engine as engine_mod
-from AI_Powered_Topic_Selection_Engine.engine import generate_topics
+_engine_dir_candidates = [
+    Path(__file__).parent / "AI_Powered_Topic_Selection_Engine",
+    Path(__file__).parent / "AI Powered Topic Selection Engine",
+    Path(__file__).parent / "AI-Powered-Topic-Selection-Engine",
+    Path(__file__).parent / "AI‑Powered-Topic-Selection-Engine",  # includes a non-breaking hyphen
+]
+
+for _engine_dir in _engine_dir_candidates:
+    if _engine_dir.exists():
+        sys.path.insert(0, str(_engine_dir))
+        break
+
+try:
+    from AI_Powered_Topic_Selection_Engine import engine as engine_mod
+    from AI_Powered_Topic_Selection_Engine.engine import generate_topics
+except ImportError:
+    import engine as engine_mod  # type: ignore
+    from engine import generate_topics  # type: ignore
 
 app = FastAPI(
     title="Research Topic Selection Engine",
@@ -16,6 +33,9 @@ app = FastAPI(
     version="1.0.0"
 )
 
+app.include_router(router)
+app.include_router(plagiarism_api.router)
+app.include_router(literature.router)
 # CORS middleware for frontend access
 app.add_middleware(
     CORSMiddleware,
@@ -48,6 +68,26 @@ def root():
     }
 
 
+@app.get("/debug", include_in_schema=False)
+def debug_config():
+    """Debug endpoint to verify which code/config is running (no secrets)."""
+
+    if os.getenv("ENABLE_DEBUG_ENDPOINT", "0").strip().lower() not in {"1", "true", "yes", "on"}:
+        return {"enabled": False}
+
+    try:
+        bad_title = "Technology Innovation in Commerce Department"
+        check = bool(engine_mod._looks_like_research_topic(bad_title, "EV adoption challenges"))
+    except Exception:
+        check = None
+
+    return {
+        "engine_file": getattr(engine_mod, "__file__", None),
+        "sem_min_hard": os.getenv("SEMANTIC_MIN_HARD", "0.40"),
+        "sem_min_rank": os.getenv("SEMANTIC_MIN", "0.40"),
+        "policy_hit_min": os.getenv("POLICY_HIT_MIN", "0.25"),
+        "topic_shape_allows_bad_title": check,
+    }
 
 if __name__ == "__main__":
     import uvicorn

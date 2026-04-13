@@ -18,7 +18,10 @@ services:
       USE_QDRANT: "true"
       QDRANT_AUTO_INDEX: "true"
       QDRANT_COLLECTION: topic_kb
-      QDRANT_VECTOR_SIZE: "256"
+      # QDRANT_VECTOR_SIZE is intentionally NOT set here.
+      # qdrant_store._vector_size() will auto-detect it from the loaded model:
+      #   - ai4bharat/indic-bert  -> 768 dims
+      #   - hashing BoW fallback  -> 256 dims
       OPENALEX_FALLBACK: "true"
     ports:
       - "8000:8000"

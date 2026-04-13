@@ -4,7 +4,10 @@ Note: Routes are now defined directly in app.py for simplicity.
 This file is kept for reference/backward compatibility.
 """
 
-from .engine import generate_topics
+try:
+	from .engine import generate_topics
+except ImportError:
+	from engine import generate_topics
 
 # Example usage in FastAPI:
 # 
