@@ -2,7 +2,8 @@
 # Stage 7 — Research gap detection (CLEANED — no hardcoded generic gaps)
 # Supports shared model instance to save RAM on CPU-only systems.
 
-from transformers import pipeline as hf_pipeline
+import os
+import requests
 import re
 
 from app.utils.logger import get_logger
@@ -12,19 +13,13 @@ logger = get_logger(__name__)
 
 class GapDetector:
 
-    def __init__(self, model_name: str = "google/flan-t5-base", shared_model=None):
-        """Initialize gap detector.
-
-        Args:
-            model_name: HuggingFace model ID.
-            shared_model: Optional pre-loaded pipeline to share with InsightExtractor.
-        """
-        if shared_model is not None:
-            logger.info("Using shared FLAN-T5 model for gap detection.")
-            self.model = shared_model
-        else:
-            logger.info(f"Loading gap detection model: {model_name}")
-            self.model = hf_pipeline("text2text-generation", model=model_name)
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-72B-Instruct", shared_model=None):
+        """Initialize API-based gap detector."""
+        self.model_name = model_name
+        self.api_url = "https://router.huggingface.co/v1/chat/completions"
+        self.token = os.environ.get("HF_TOKEN")
+        if not self.token:
+            logger.warning("HF_TOKEN is not set in environment variables.")
 
     def _context_aware_rules(self, insights: dict, context: str) -> list[str]:
         """Generate gaps ONLY if there is evidence in the text."""
@@ -68,19 +63,34 @@ class GapDetector:
             f"{combined[:600]}"
         )
 
-        try:
-            output = self.model(prompt, max_length=120, do_sample=False)
-            raw = output[0]["generated_text"].strip()
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
 
-            lines = re.split(r"\n|•|-", raw)
-            gaps = []
-            for line in lines:
-                line = line.strip()
-                if 10 < len(line) < 150:
-                    gaps.append(line)
-            return gaps[:3]
+        payload = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+
+        try:
+            response = requests.post(self.api_url, headers=headers, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            
+            if "choices" in result and len(result["choices"]) > 0:
+                raw = result["choices"][0]["message"]["content"].strip()
+                lines = re.split(r"\n|•|-", raw)
+                gaps = []
+                for line in lines:
+                    line = line.strip()
+                    if 10 < len(line) < 150:
+                        gaps.append(line)
+                return gaps[:3]
+            else:
+                logger.error(f"Gap detection API returned unexpected format: {result}")
+                return []
         except Exception as e:
-            logger.error(f"LLM gap detection failed: {e}")
+            logger.error(f"LLM gap detection API failed: {e}")
             return []
 
     def detect_gaps(self, insights: dict, context_text: str) -> list[str]:

@@ -66,11 +66,10 @@ class LiteratureReviewOrchestrator:
 
         self.summarizer = Summarizer()
 
-        # Share one FLAN-T5 model between insight extractor and gap detector
-        logger.info("Loading shared FLAN-T5 model for insights + gaps...")
-        shared_flan = hf_pipeline("text2text-generation", model="google/flan-t5-base")
-        self.insight_extractor = InsightExtractor(shared_model=shared_flan)
-        self.gap_detector = GapDetector(shared_model=shared_flan)
+        # Use API-based model for insights + gaps (no local loading)
+        logger.info("Initializing API-based model for insights + gaps...")
+        self.insight_extractor = InsightExtractor()
+        self.gap_detector = GapDetector()
 
         self.vector_store = VectorStore(dimension=embed_dim)
         self.scholar = SemanticScholarClient()

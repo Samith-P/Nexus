@@ -3,7 +3,8 @@
 # Uses FLAN-T5 with improved, generic prompts.
 # Supports shared model instance to save RAM on CPU-only systems.
 
-from transformers import pipeline as hf_pipeline
+import os
+import requests
 import re
 
 from app.utils.logger import get_logger
@@ -13,19 +14,13 @@ logger = get_logger(__name__)
 
 class InsightExtractor:
 
-    def __init__(self, model_name: str = "google/flan-t5-base", shared_model=None):
-        """Initialize insight extractor.
-
-        Args:
-            model_name: HuggingFace model ID.
-            shared_model: Optional pre-loaded pipeline to share with GapDetector (saves RAM).
-        """
-        if shared_model is not None:
-            logger.info("Using shared FLAN-T5 model for insight extraction.")
-            self.model = shared_model
-        else:
-            logger.info(f"Loading insight extraction model: {model_name}")
-            self.model = hf_pipeline("text2text-generation", model=model_name)
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-72B-Instruct", shared_model=None):
+        """Initialize API-based insight extractor."""
+        self.model_name = model_name
+        self.api_url = "https://router.huggingface.co/v1/chat/completions"
+        self.token = os.environ.get("HF_TOKEN")
+        if not self.token:
+            logger.warning("HF_TOKEN is not set in environment variables.")
 
     def _build_prompt(self, text: str, task: str) -> str:
         prompts = {
@@ -66,14 +61,30 @@ class InsightExtractor:
         safe_text = text[:1200]
         prompt = self._build_prompt(safe_text, task)
 
+        headers = {}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        payload = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+
         try:
-            output = self.model(prompt, max_length=150, do_sample=False)
-            raw = output[0]["generated_text"]
-            results = self._clean_output(raw)
-            logger.info(f"Extracted {len(results)} {task} insights.")
-            return results[:5]
+            response = requests.post(self.api_url, headers=headers, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            
+            if "choices" in result and len(result["choices"]) > 0:
+                raw = result["choices"][0]["message"]["content"]
+                results = self._clean_output(raw)
+                logger.info(f"Extracted {len(results)} {task} insights.")
+                return results[:5]
+            else:
+                logger.error(f"Insight extraction API returned unexpected format: {result}")
+                return []
         except Exception as e:
-            logger.error(f"Insight extraction failed for {task}: {e}")
+            logger.error(f"Insight extraction API failed for {task}: {e}")
             return []
 
     def extract_all(self, sections: dict) -> dict:
