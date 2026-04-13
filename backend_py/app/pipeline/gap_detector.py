@@ -5,6 +5,7 @@
 import os
 import requests
 import re
+from app.pipeline.hf_token_pool import HFTokenPool
 
 from app.utils.logger import get_logger
 
@@ -17,9 +18,9 @@ class GapDetector:
         """Initialize API-based gap detector."""
         self.model_name = model_name
         self.api_url = "https://router.huggingface.co/v1/chat/completions"
-        self.token = os.environ.get("HF_TOKEN")
-        if not self.token:
-            logger.warning("HF_TOKEN is not set in environment variables.")
+        self.token_pool = HFTokenPool()
+        if not self.token_pool.has_tokens():
+            logger.warning("No Hugging Face token found for gap detector.")
 
     def _context_aware_rules(self, insights: dict, context: str) -> list[str]:
         """Generate gaps ONLY if there is evidence in the text."""
@@ -63,35 +64,45 @@ class GapDetector:
             f"{combined[:600]}"
         )
 
-        headers = {}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-
         payload = {
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}]
         }
 
-        try:
-            response = requests.post(self.api_url, headers=headers, json=payload)
-            response.raise_for_status()
-            result = response.json()
-            
-            if "choices" in result and len(result["choices"]) > 0:
-                raw = result["choices"][0]["message"]["content"].strip()
-                lines = re.split(r"\n|•|-", raw)
-                gaps = []
-                for line in lines:
-                    line = line.strip()
-                    if 10 < len(line) < 150:
-                        gaps.append(line)
-                return gaps[:3]
-            else:
+        tokens = self.token_pool.get_primary_tokens() + self.token_pool.get_fallback_tokens()
+        if not tokens:
+            return []
+
+        last_error = None
+        for idx, token in enumerate(tokens, start=1):
+            headers = {"Authorization": f"Bearer {token}"}
+            try:
+                response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+                self.token_pool.mark_result(token, response.status_code)
+                if response.status_code in {401, 402, 403, 429, 500, 502, 503, 504}:
+                    last_error = RuntimeError(f"status={response.status_code}")
+                    continue
+                response.raise_for_status()
+                result = response.json()
+
+                if "choices" in result and len(result["choices"]) > 0:
+                    raw = result["choices"][0]["message"]["content"].strip()
+                    lines = re.split(r"\n|•|-", raw)
+                    gaps = []
+                    for line in lines:
+                        line = line.strip()
+                        if 10 < len(line) < 150:
+                            gaps.append(line)
+                    return gaps[:3]
+
                 logger.error(f"Gap detection API returned unexpected format: {result}")
                 return []
-        except Exception as e:
-            logger.error(f"LLM gap detection API failed: {e}")
-            return []
+            except Exception as e:
+                last_error = e
+                logger.warning("Gap detection request failed token %s/%s: %s", idx, len(tokens), e)
+
+        logger.error(f"LLM gap detection API failed after token retries: {last_error}")
+        return []
 
     def detect_gaps(self, insights: dict, context_text: str) -> list[str]:
         """Detect research gaps using hybrid approach (context-aware rules + LLM)."""

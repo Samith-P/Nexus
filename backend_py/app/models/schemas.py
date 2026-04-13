@@ -64,6 +64,8 @@ class LiteratureReviewResult(BaseModel):
     output_language_applied: str = "en"
     translation_status: str = "not_requested"
     translation_message: str = ""
+    translation_time_seconds: float = 0.0
+    translation_stage_timings: dict[str, float] = Field(default_factory=dict)
     processing_time_seconds: float = 0.0
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 

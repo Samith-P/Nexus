@@ -67,7 +67,8 @@ def _prepare_user_result(
         translated_result.output_language_applied = output_language
         translated_result.translation_status = "translated"
         translated_result.translation_message = (
-            f"Output translated to {SUPPORTED_LANGUAGES[output_language]}."
+            f"Output translated to {SUPPORTED_LANGUAGES[output_language]} in "
+            f"{translated_result.translation_time_seconds:.2f}s."
         )
         logger.debug(
             "Translation completed for target_language=%s papers=%s",

@@ -5,6 +5,7 @@
 
 import os
 import requests
+from app.pipeline.hf_token_pool import HFTokenPool
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -19,9 +20,9 @@ class Summarizer:
         self.model_name = model_name or DEFAULT_MODEL
         logger.info(f"Using Hugging Face Inference API for model: {self.model_name}")
         self.api_url = f"https://router.huggingface.co/hf-inference/models/{self.model_name}"
-        self.token = os.environ.get("HF_TOKEN")
-        if not self.token:
-            logger.warning("HF_TOKEN is not set in environment variables.")
+        self.token_pool = HFTokenPool()
+        if not self.token_pool.has_tokens():
+            logger.warning("No Hugging Face token found for summarizer.")
 
     def _safe_truncate(self, text: str, max_words: int = MAX_INPUT_WORDS) -> str:
         """Truncate text to fit within model token limits."""
@@ -47,10 +48,6 @@ class Summarizer:
         max_len = min(150, input_len // 2 + 20)
         min_len = min(40, input_len // 4)
         
-        headers = {}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-
         payload = {
             "inputs": text,
             "parameters": {
@@ -60,18 +57,31 @@ class Summarizer:
             }
         }
 
-        try:
-            response = requests.post(self.api_url, headers=headers, json=payload)
-            response.raise_for_status()
-            result = response.json()
-            if isinstance(result, list) and len(result) > 0 and "summary_text" in result[0]:
-                return result[0]["summary_text"]
-            else:
+        tokens = self.token_pool.get_primary_tokens() + self.token_pool.get_fallback_tokens()
+        if not tokens:
+            return ""
+
+        last_error = None
+        for idx, token in enumerate(tokens, start=1):
+            headers = {"Authorization": f"Bearer {token}"}
+            try:
+                response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+                self.token_pool.mark_result(token, response.status_code)
+                if response.status_code in {401, 402, 403, 429, 500, 502, 503, 504}:
+                    last_error = RuntimeError(f"status={response.status_code}")
+                    continue
+                response.raise_for_status()
+                result = response.json()
+                if isinstance(result, list) and len(result) > 0 and "summary_text" in result[0]:
+                    return result[0]["summary_text"]
                 logger.error(f"Summarization API returned unexpected format: {result}")
                 return ""
-        except Exception as e:
-            logger.error(f"Summarization API failed: {e}")
-            return ""
+            except Exception as e:
+                last_error = e
+                logger.warning("Summarization request failed token %s/%s: %s", idx, len(tokens), e)
+
+        logger.error(f"Summarization API failed after token retries: {last_error}")
+        return ""
 
     def hierarchical_summarize(self, chunks: list[str]) -> str:
         """Summarize chunks individually, then combine and re-summarize."""

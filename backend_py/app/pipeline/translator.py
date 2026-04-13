@@ -7,12 +7,14 @@ from __future__ import annotations
 import os
 import re
 import threading
+import time
 from itertools import count
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
 from app.pipeline.multilingual import SUPPORTED_LANGUAGES
+from app.pipeline.hf_token_pool import HFTokenPool
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -22,34 +24,39 @@ class HFChatTranslator:
     """Translate text through the Hugging Face OpenAI-compatible chat endpoint."""
 
     def __init__(self, target_lang: str = "en"):
-        self.hf_tokens = self._load_hf_tokens()
-        self.primary_tokens = self.hf_tokens[:3]
-        self.fallback_tokens = self.hf_tokens[3:5]
+        self.token_pool = HFTokenPool()
         self.translation_model = os.getenv(
             "TRANSLATION_MODEL",
             "Qwen/Qwen2.5-72B-Instruct",
         ).strip()
         self.translation_max_chars = int(os.getenv("TRANSLATION_MAX_CHARS", "2000"))
+        self.translation_min_chars = int(os.getenv("TRANSLATION_MIN_CHARS", "12"))
+        self.max_output_ratio = float(os.getenv("TRANSLATION_MAX_OUTPUT_RATIO", "2.5"))
         self.hf_chat_url = os.getenv(
             "HF_CHAT_URL",
             "https://router.huggingface.co/v1/chat/completions",
         ).strip()
         self.timeout_seconds = self._resolve_timeout_seconds(target_lang)
+        self.max_inflight_requests = max(1, int(os.getenv("TRANSLATION_MAX_INFLIGHT_REQUESTS", "6")))
+        self._inflight_semaphore = threading.BoundedSemaphore(self.max_inflight_requests)
+        self._cache_lock = threading.Lock()
+        self._translation_cache: dict[tuple[str, str, str], str] = {}
         self._request_counter = count(1)
         self._request_counter_lock = threading.Lock()
 
-        if not self.hf_tokens:
+        if not self.token_pool.has_tokens():
             raise RuntimeError(
                 "No Hugging Face token found. Configure HF_TOKEN_1..HF_TOKEN_5 or HF_TOKEN in Nexus-journal/backend_py/.env."
             )
 
         logger.info(
-            "HF chat translator initialized with model=%s endpoint=%s token_count=%s primary=%s fallback=%s",
+            "HF chat translator initialized with model=%s endpoint=%s token_count=%s primary=%s fallback=%s max_inflight=%s",
             self.translation_model,
             self.hf_chat_url,
-            len(self.hf_tokens),
-            len(self.primary_tokens),
-            len(self.fallback_tokens),
+            self.token_pool.token_count(),
+            self.token_pool.primary_count,
+            self.token_pool.fallback_count,
+            self.max_inflight_requests,
         )
         logger.debug(
             "HF translator config target_language=%s timeout_seconds=%s max_chars=%s",
@@ -57,25 +64,6 @@ class HFChatTranslator:
             self.timeout_seconds,
             self.translation_max_chars,
         )
-
-    def _load_hf_tokens(self) -> list[str]:
-        tokens: list[str] = []
-
-        for idx in range(1, 6):
-            token = os.getenv(f"HF_TOKEN_{idx}", "").strip()
-            if token:
-                tokens.append(token)
-
-        legacy_token = os.getenv("HF_TOKEN", "").strip()
-        if legacy_token:
-            tokens.append(legacy_token)
-
-        csv_tokens = os.getenv("HF_TOKENS", "").strip()
-        if csv_tokens:
-            tokens.extend([item.strip() for item in csv_tokens.split(",") if item.strip()])
-
-        # Keep token order but remove duplicates.
-        return list(dict.fromkeys(tokens))
 
     def _resolve_timeout_seconds(self, target_lang: str) -> int:
         base_timeout = int(os.getenv("HF_CHAT_TIMEOUT_SECONDS", "60"))
@@ -88,6 +76,14 @@ class HFChatTranslator:
     def translate_text(self, text: str, source_lang: str, target_lang: str) -> str:
         if not text or not text.strip() or source_lang == target_lang:
             return text
+        if len(text.strip()) <= self.translation_min_chars:
+            return text
+
+        cache_key = (source_lang, target_lang, text)
+        with self._cache_lock:
+            cached = self._translation_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         chunks = self._split_text(text)
         translated_chunks: list[str] = []
@@ -136,7 +132,19 @@ class HFChatTranslator:
             target_lang,
             len(translated_chunks),
         )
-        return "\n\n".join(piece for piece in translated_chunks if piece.strip()).strip()
+        translated_text = "\n\n".join(piece for piece in translated_chunks if piece.strip()).strip()
+        if translated_text and len(translated_text) > int(len(text) * self.max_output_ratio):
+            logger.warning(
+                "Translated output exceeded ratio limit source_chars=%s translated_chars=%s ratio_limit=%s; using source text.",
+                len(text),
+                len(translated_text),
+                self.max_output_ratio,
+            )
+            translated_text = text
+
+        with self._cache_lock:
+            self._translation_cache[cache_key] = translated_text
+        return translated_text
 
     def _translate_chunk(
         self,
@@ -169,9 +177,10 @@ class HFChatTranslator:
             ],
         }
 
+        primary_tokens = self.token_pool.get_primary_tokens()
         primary_errors: list[str] = []
-        if self.primary_tokens:
-            executor = ThreadPoolExecutor(max_workers=len(self.primary_tokens))
+        if primary_tokens:
+            executor = ThreadPoolExecutor(max_workers=len(primary_tokens))
             futures = {
                 executor.submit(
                     self._translate_with_token,
@@ -182,7 +191,7 @@ class HFChatTranslator:
                     chunk_index,
                     total_chunks,
                 ): token
-                for token in self.primary_tokens
+                for token in primary_tokens
             }
             try:
                 for future in as_completed(futures):
@@ -204,7 +213,8 @@ class HFChatTranslator:
                 executor.shutdown(wait=False, cancel_futures=True)
 
         fallback_errors: list[str] = []
-        for token in self.fallback_tokens:
+        used_tokens = set(primary_tokens)
+        for token in self.token_pool.get_fallback_tokens(exclude=used_tokens):
             try:
                 return self._translate_with_token(
                     token,
@@ -252,6 +262,7 @@ class HFChatTranslator:
         )
 
         try:
+            self._inflight_semaphore.acquire()
             response = client.post(self.hf_chat_url, json=payload)
         except httpx.HTTPError as exc:
             logger.warning(
@@ -269,8 +280,13 @@ class HFChatTranslator:
                 token_hint,
                 exc,
             )
+            self.token_pool.mark_result(token, 503)
             raise RuntimeError(f"request_failed token={token_hint} error={exc}") from exc
         finally:
+            try:
+                self._inflight_semaphore.release()
+            except ValueError:
+                pass
             client.close()
 
         logger.info(
@@ -281,16 +297,17 @@ class HFChatTranslator:
             token_hint,
             response.status_code,
         )
+        self.token_pool.mark_result(token, response.status_code)
 
-        if response.status_code in {401, 403}:
+        if response.status_code in {401, 402, 403}:
             logger.debug(
-                "HF translation unauthorized source=%s target=%s token=%s status=%s",
+                "HF translation auth/billing issue source=%s target=%s token=%s status=%s",
                 source_lang,
                 target_lang,
                 token_hint,
                 response.status_code,
             )
-            raise RuntimeError(f"unauthorized token={token_hint} status={response.status_code}")
+            raise RuntimeError(f"auth_or_billing token={token_hint} status={response.status_code}")
 
         try:
             response.raise_for_status()
@@ -423,7 +440,13 @@ class TranslationOutputLayer:
     def __init__(self, target_lang: str = "en"):
         self.target_lang = target_lang
         self.translator = None
-        self.parallel_workers = max(1, int(os.getenv("TRANSLATION_PARALLEL_WORKERS", "4")))
+        self.parallel_workers = max(1, int(os.getenv("TRANSLATION_PARALLEL_WORKERS", "2")))
+        raw_fields = os.getenv(
+            "TRANSLATE_FIELDS",
+            "title,sections,summary,section_summaries,insights,gaps,evidence_spans,comparison,common_themes,research_gaps,related_works",
+        )
+        self.enabled_fields = {item.strip() for item in raw_fields.split(",") if item.strip()}
+        self.translation_timings: dict[str, float] = {}
 
         if target_lang != "en":
             if target_lang not in SUPPORTED_LANGUAGES:
@@ -483,6 +506,9 @@ class TranslationOutputLayer:
             return text
         return self.translator.translate_text(text=text, source_lang="en", target_lang=self.target_lang)
 
+    def _is_enabled(self, field_name: str) -> bool:
+        return field_name in self.enabled_fields
+
     def _translate_list(self, items: list[str]) -> list[str]:
         return self._translate_texts_parallel(items, label="list_items")
 
@@ -501,50 +527,71 @@ class TranslationOutputLayer:
             len(analysis.sections or {}),
         )
 
-        logger.info("Translating analysis field=title")
-        analysis.title = self._translate_text(analysis.title)
+        if self._is_enabled("title"):
+            t0 = time.time()
+            logger.info("Translating analysis field=title")
+            analysis.title = self._translate_text(analysis.title)
+            self.translation_timings["analysis.title"] = self.translation_timings.get("analysis.title", 0.0) + (time.time() - t0)
 
-        logger.info("Translating analysis field=sections count=%s", len(analysis.sections or {}))
-        analysis.sections = self._translate_mapping_values_parallel(
-            analysis.sections,
-            label="analysis.sections",
-        )
+        if self._is_enabled("sections"):
+            t0 = time.time()
+            logger.info("Translating analysis field=sections count=%s", len(analysis.sections or {}))
+            analysis.sections = self._translate_mapping_values_parallel(
+                analysis.sections,
+                label="analysis.sections",
+            )
+            self.translation_timings["analysis.sections"] = self.translation_timings.get("analysis.sections", 0.0) + (time.time() - t0)
 
-        logger.info("Translating analysis field=summary")
-        analysis.summary = self._translate_text(analysis.summary)
+        if self._is_enabled("summary"):
+            t0 = time.time()
+            logger.info("Translating analysis field=summary")
+            analysis.summary = self._translate_text(analysis.summary)
+            self.translation_timings["analysis.summary"] = self.translation_timings.get("analysis.summary", 0.0) + (time.time() - t0)
 
-        logger.info("Translating analysis field=section_summaries count=%s", len(analysis.section_summaries or {}))
-        analysis.section_summaries = self._translate_mapping_values_parallel(
-            analysis.section_summaries,
-            label="analysis.section_summaries",
-        )
+        if self._is_enabled("section_summaries"):
+            t0 = time.time()
+            logger.info("Translating analysis field=section_summaries count=%s", len(analysis.section_summaries or {}))
+            analysis.section_summaries = self._translate_mapping_values_parallel(
+                analysis.section_summaries,
+                label="analysis.section_summaries",
+            )
+            self.translation_timings["analysis.section_summaries"] = self.translation_timings.get("analysis.section_summaries", 0.0) + (time.time() - t0)
 
-        logger.info("Translating analysis field=insights.contributions count=%s", len(analysis.insights.contributions))
-        analysis.insights.contributions = self._translate_texts_parallel(
-            analysis.insights.contributions,
-            label="analysis.insights.contributions",
-        )
+        if self._is_enabled("insights"):
+            t0 = time.time()
+            logger.info("Translating analysis field=insights.contributions count=%s", len(analysis.insights.contributions))
+            analysis.insights.contributions = self._translate_texts_parallel(
+                analysis.insights.contributions,
+                label="analysis.insights.contributions",
+            )
 
-        logger.info("Translating analysis field=insights.methods count=%s", len(analysis.insights.methods))
-        analysis.insights.methods = self._translate_texts_parallel(
-            analysis.insights.methods,
-            label="analysis.insights.methods",
-        )
+            logger.info("Translating analysis field=insights.methods count=%s", len(analysis.insights.methods))
+            analysis.insights.methods = self._translate_texts_parallel(
+                analysis.insights.methods,
+                label="analysis.insights.methods",
+            )
 
-        logger.info("Translating analysis field=insights.results count=%s", len(analysis.insights.results))
-        analysis.insights.results = self._translate_texts_parallel(
-            analysis.insights.results,
-            label="analysis.insights.results",
-        )
+            logger.info("Translating analysis field=insights.results count=%s", len(analysis.insights.results))
+            analysis.insights.results = self._translate_texts_parallel(
+                analysis.insights.results,
+                label="analysis.insights.results",
+            )
+            self.translation_timings["analysis.insights"] = self.translation_timings.get("analysis.insights", 0.0) + (time.time() - t0)
 
-        logger.info("Translating analysis field=gaps count=%s", len(analysis.gaps))
-        analysis.gaps = self._translate_texts_parallel(analysis.gaps, label="analysis.gaps")
+        if self._is_enabled("gaps"):
+            t0 = time.time()
+            logger.info("Translating analysis field=gaps count=%s", len(analysis.gaps))
+            analysis.gaps = self._translate_texts_parallel(analysis.gaps, label="analysis.gaps")
+            self.translation_timings["analysis.gaps"] = self.translation_timings.get("analysis.gaps", 0.0) + (time.time() - t0)
 
-        logger.info("Translating analysis field=evidence_spans count=%s", len(analysis.evidence_spans))
-        evidence_texts = [evidence.text for evidence in analysis.evidence_spans]
-        translated_evidence = self._translate_texts_parallel(evidence_texts, label="analysis.evidence_spans")
-        for idx, evidence in enumerate(analysis.evidence_spans):
-            evidence.text = translated_evidence[idx]
+        if self._is_enabled("evidence_spans"):
+            t0 = time.time()
+            logger.info("Translating analysis field=evidence_spans count=%s", len(analysis.evidence_spans))
+            evidence_texts = [evidence.text for evidence in analysis.evidence_spans]
+            translated_evidence = self._translate_texts_parallel(evidence_texts, label="analysis.evidence_spans")
+            for idx, evidence in enumerate(analysis.evidence_spans):
+                evidence.text = translated_evidence[idx]
+            self.translation_timings["analysis.evidence_spans"] = self.translation_timings.get("analysis.evidence_spans", 0.0) + (time.time() - t0)
 
         logger.debug("Analysis translation complete target=%s", self.target_lang)
 
@@ -560,11 +607,13 @@ class TranslationOutputLayer:
             len(result.related_works),
         )
 
+        phase_start = time.time()
         logger.info("Translation phase start target=%s papers=%s", self.target_lang, len(result.papers))
         for paper in result.papers:
             self.translate_analysis(paper)
 
-        if result.comparison_matrix:
+        if result.comparison_matrix and self._is_enabled("comparison"):
+            t0 = time.time()
             for entry in result.comparison_matrix.entries:
                 entry.paper_title = self._translate_text(entry.paper_title)
                 entry.methods = self._translate_list(entry.methods)
@@ -577,14 +626,35 @@ class TranslationOutputLayer:
             result.comparison_matrix.differing_methods = self._translate_list(
                 result.comparison_matrix.differing_methods
             )
+            self.translation_timings["comparison_matrix"] = self.translation_timings.get("comparison_matrix", 0.0) + (time.time() - t0)
 
-        result.common_themes = self._translate_list(result.common_themes)
-        result.research_gaps = self._translate_list(result.research_gaps)
+        if self._is_enabled("common_themes"):
+            t0 = time.time()
+            result.common_themes = self._translate_list(result.common_themes)
+            self.translation_timings["common_themes"] = self.translation_timings.get("common_themes", 0.0) + (time.time() - t0)
 
-        for related_work in result.related_works:
-            related_work.title = self._translate_text(related_work.title)
-            if related_work.abstract:
-                related_work.abstract = self._translate_text(related_work.abstract)
+        if self._is_enabled("research_gaps"):
+            t0 = time.time()
+            result.research_gaps = self._translate_list(result.research_gaps)
+            self.translation_timings["research_gaps"] = self.translation_timings.get("research_gaps", 0.0) + (time.time() - t0)
+
+        if self._is_enabled("related_works"):
+            t0 = time.time()
+            for related_work in result.related_works:
+                related_work.title = self._translate_text(related_work.title)
+                if related_work.abstract:
+                    related_work.abstract = self._translate_text(related_work.abstract)
+            self.translation_timings["related_works"] = self.translation_timings.get("related_works", 0.0) + (time.time() - t0)
+
+        result.translation_time_seconds = round(time.time() - phase_start, 2)
+        result.translation_stage_timings = {
+            key: round(value, 2)
+            for key, value in sorted(self.translation_timings.items(), key=lambda kv: kv[1], reverse=True)
+        }
 
         logger.debug("Review result translation complete target=%s", self.target_lang)
-        logger.info("Translation phase complete target=%s", self.target_lang)
+        logger.info(
+            "Translation phase complete target=%s total_seconds=%s",
+            self.target_lang,
+            result.translation_time_seconds,
+        )
