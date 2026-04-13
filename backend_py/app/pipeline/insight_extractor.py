@@ -18,9 +18,27 @@ class InsightExtractor:
         """Initialize API-based insight extractor."""
         self.model_name = model_name
         self.api_url = "https://router.huggingface.co/v1/chat/completions"
-        self.token = os.environ.get("HF_TOKEN")
-        if not self.token:
-            logger.warning("HF_TOKEN is not set in environment variables.")
+        self.tokens = self._load_hf_tokens()
+        if not self.tokens:
+            logger.warning("No Hugging Face token found. Set HF_TOKEN_1..HF_TOKEN_5 or HF_TOKEN.")
+
+    def _load_hf_tokens(self) -> list[str]:
+        tokens: list[str] = []
+
+        for idx in range(1, 6):
+            token = os.getenv(f"HF_TOKEN_{idx}", "").strip()
+            if token:
+                tokens.append(token)
+
+        legacy_token = os.getenv("HF_TOKEN", "").strip()
+        if legacy_token:
+            tokens.append(legacy_token)
+
+        csv_tokens = os.getenv("HF_TOKENS", "").strip()
+        if csv_tokens:
+            tokens.extend([item.strip() for item in csv_tokens.split(",") if item.strip()])
+
+        return list(dict.fromkeys(tokens))
 
     def _build_prompt(self, text: str, task: str) -> str:
         prompts = {
@@ -61,31 +79,52 @@ class InsightExtractor:
         safe_text = text[:1200]
         prompt = self._build_prompt(safe_text, task)
 
-        headers = {}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-
         payload = {
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}]
         }
 
-        try:
-            response = requests.post(self.api_url, headers=headers, json=payload)
-            response.raise_for_status()
-            result = response.json()
-            
-            if "choices" in result and len(result["choices"]) > 0:
-                raw = result["choices"][0]["message"]["content"]
-                results = self._clean_output(raw)
-                logger.info(f"Extracted {len(results)} {task} insights.")
-                return results[:5]
-            else:
+        if not self.tokens:
+            return []
+
+        last_error = None
+        for idx, token in enumerate(self.tokens, start=1):
+            headers = {"Authorization": f"Bearer {token}"}
+            try:
+                response = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+                if response.status_code in {401, 403}:
+                    logger.warning(
+                        "Insight extraction auth failed for %s with token %s/%s; trying next token.",
+                        task,
+                        idx,
+                        len(self.tokens),
+                    )
+                    last_error = RuntimeError(f"unauthorized status={response.status_code}")
+                    continue
+
+                response.raise_for_status()
+                result = response.json()
+
+                if "choices" in result and len(result["choices"]) > 0:
+                    raw = result["choices"][0]["message"]["content"]
+                    results = self._clean_output(raw)
+                    logger.info(f"Extracted {len(results)} {task} insights.")
+                    return results[:5]
+
                 logger.error(f"Insight extraction API returned unexpected format: {result}")
                 return []
-        except Exception as e:
-            logger.error(f"Insight extraction API failed for {task}: {e}")
-            return []
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Insight extraction request failed for %s with token %s/%s: %s",
+                    task,
+                    idx,
+                    len(self.tokens),
+                    e,
+                )
+
+        logger.error(f"Insight extraction API failed for {task} after {len(self.tokens)} tokens: {last_error}")
+        return []
 
     def extract_all(self, sections: dict) -> dict:
         """Extract contributions, methods, and results from paper sections."""

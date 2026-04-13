@@ -43,12 +43,22 @@ class ReportExporter:
         """Safe multi_cell wrapper — skips empty text."""
         text = _safe(text)
         if not text:
+            logger.debug("Skipping empty export text block.")
             return
+        logger.debug("Writing PDF text block chars=%s preview=%r", len(text), text[:120])
         pdf.multi_cell(w=0, h=h, text=text, new_x="LMARGIN", new_y="NEXT")
 
     def export_pdf(self, result, output_path: str) -> str:
         if not FPDF_AVAILABLE:
             raise ImportError("fpdf2 is required. pip install fpdf2")
+
+        logger.debug(
+            "Starting PDF export output_path=%s papers=%s has_comparison_matrix=%s related_works=%s",
+            output_path,
+            len(result.papers),
+            bool(result.comparison_matrix),
+            len(result.related_works),
+        )
 
         pdf = FPDF()
         pdf.set_auto_page_break(auto=True, margin=20)
@@ -74,6 +84,7 @@ class ReportExporter:
                 pdf.add_page()
 
             # Title
+            logger.debug("Exporting paper index=%s title_preview=%r", i, (paper.title or "")[:120])
             pdf.set_font("Helvetica", "B", 13)
             title = _safe(paper.title[:120]) or f"Paper {i+1}"
             self._write(pdf, f"Paper {i+1}: {title}", h=7)
@@ -92,6 +103,7 @@ class ReportExporter:
                 pdf.cell(0, 7, "Section Summaries", ln=True)
                 for sec, summ in paper.section_summaries.items():
                     if summ and summ.strip():
+                        logger.debug("Exporting section summary section=%s chars=%s", sec, len(summ))
                         pdf.set_font("Helvetica", "BI", 10)
                         pdf.cell(0, 6, _safe(sec.title()), ln=True)
                         pdf.set_font("Helvetica", "", 9)
@@ -110,6 +122,7 @@ class ReportExporter:
                     pdf.cell(0, 6, _safe(f"{cat.title()}:"), ln=True)
                     pdf.set_font("Helvetica", "", 9)
                     for item in items:
+                        logger.debug("Exporting insight category=%s chars=%s preview=%r", cat, len(item), item[:100])
                         self._write(pdf, f"- {item[:200]}")
             pdf.ln(4)
 
@@ -120,6 +133,7 @@ class ReportExporter:
                 pdf.cell(0, 7, "Research Gaps", ln=True)
                 pdf.set_font("Helvetica", "", 9)
                 for gap in gaps:
+                    logger.debug("Exporting paper gap chars=%s preview=%r", len(gap), gap[:100])
                     self._write(pdf, f"- {gap[:200]}")
                 pdf.ln(3)
 
@@ -136,6 +150,7 @@ class ReportExporter:
                 pdf.cell(0, 7, "Differing Methods:", ln=True)
                 pdf.set_font("Helvetica", "", 9)
                 for m in dm:
+                    logger.debug("Exporting differing method chars=%s preview=%r", len(m), m[:100])
                     self._write(pdf, f"- {m[:150]}")
                 pdf.ln(3)
 
@@ -144,6 +159,7 @@ class ReportExporter:
                 pdf.set_font("Helvetica", "B", 10)
                 pdf.cell(0, 7, "Common Methods:", ln=True)
                 pdf.set_font("Helvetica", "", 9)
+                logger.debug("Exporting common methods count=%s", len(cm))
                 self._write(pdf, ", ".join(cm))
                 pdf.ln(3)
 
@@ -155,6 +171,7 @@ class ReportExporter:
             pdf.cell(0, 7, "Common Themes", ln=True)
             pdf.set_font("Helvetica", "", 9)
             for theme in themes:
+                logger.debug("Exporting common theme chars=%s preview=%r", len(theme), theme[:100])
                 self._write(pdf, f"- {theme[:150]}")
             pdf.ln(3)
 
@@ -166,6 +183,7 @@ class ReportExporter:
             pdf.cell(0, 7, "Aggregated Research Gaps", ln=True)
             pdf.set_font("Helvetica", "", 9)
             for gap in rgaps:
+                logger.debug("Exporting aggregated research gap chars=%s preview=%r", len(gap), gap[:100])
                 self._write(pdf, f"- {gap[:200]}")
 
         # ── Related Works ──
@@ -178,10 +196,12 @@ class ReportExporter:
             for rw in result.related_works:
                 authors = ", ".join(rw.authors[:3]) if rw.authors else "Unknown"
                 year = f" ({rw.year})" if rw.year else ""
+                logger.debug("Exporting related work title=%r source=%s", (rw.title or "")[:120], rw.source)
                 self._write(pdf, f"- {rw.title[:120]}{year}")
                 self._write(pdf, f"  Authors: {authors} | Source: {rw.source}")
                 pdf.ln(2)
 
         pdf.output(output_path)
         logger.info(f"PDF report saved to {output_path}")
+        logger.debug("PDF export completed successfully output_path=%s", output_path)
         return output_path

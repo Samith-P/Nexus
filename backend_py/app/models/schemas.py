@@ -60,6 +60,10 @@ class LiteratureReviewResult(BaseModel):
     common_themes: list[str] = Field(default_factory=list)
     research_gaps: list[str] = Field(default_factory=list)
     related_works: list[RelatedWork] = Field(default_factory=list)
+    output_language_requested: str = "en"
+    output_language_applied: str = "en"
+    translation_status: str = "not_requested"
+    translation_message: str = ""
     processing_time_seconds: float = 0.0
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 

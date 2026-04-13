@@ -4,7 +4,7 @@
 # IndicBART: ai4bharat/IndicBARTSS — multilingual summarization/generation
 #
 # CPU-optimized: models loaded lazily, only when non-English language is requested.
-# Supported languages: English (en), Hindi (hi), Telugu (te), Urdu (ur), Sanskrit (sa)
+# Supported output languages currently mirror the standalone multilingual prototype.
 
 import torch
 import numpy as np
@@ -19,15 +19,11 @@ SUPPORTED_LANGUAGES = {
     "hi": "Hindi",
     "te": "Telugu",
     "ur": "Urdu",
-    "sa": "Sanskrit",
     "bn": "Bengali",
     "ta": "Tamil",
     "ml": "Malayalam",
-    "kn": "Kannada",
     "mr": "Marathi",
     "gu": "Gujarati",
-    "pa": "Punjabi",
-    "or": "Odia",
 }
 
 # IndicBART language codes (used in tokenizer)
@@ -36,15 +32,11 @@ INDICBART_LANG_CODES = {
     "hi": "<2hi>",
     "te": "<2te>",
     "ur": "<2ur>",
-    "sa": "<2sa>",
     "bn": "<2bn>",
     "ta": "<2ta>",
     "ml": "<2ml>",
-    "kn": "<2kn>",
     "mr": "<2mr>",
     "gu": "<2gu>",
-    "pa": "<2pa>",
-    "or": "<2or>",
 }
 
 

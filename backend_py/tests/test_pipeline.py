@@ -137,6 +137,9 @@ class TestSchemas:
         from app.models.schemas import LiteratureReviewResult
         r = LiteratureReviewResult()
         assert r.papers == []
+        assert r.output_language_requested == "en"
+        assert r.output_language_applied == "en"
+        assert r.translation_status == "not_requested"
         assert r.processing_time_seconds == 0.0
         assert r.timestamp != ""
 
@@ -199,11 +202,17 @@ class TestMultilingual:
 
     def test_supported_languages(self):
         from app.pipeline.multilingual import SUPPORTED_LANGUAGES
-        assert "en" in SUPPORTED_LANGUAGES
-        assert "hi" in SUPPORTED_LANGUAGES
-        assert "te" in SUPPORTED_LANGUAGES
-        assert "ur" in SUPPORTED_LANGUAGES
-        assert "sa" in SUPPORTED_LANGUAGES
+        assert SUPPORTED_LANGUAGES == {
+            "en": "English",
+            "hi": "Hindi",
+            "te": "Telugu",
+            "ur": "Urdu",
+            "bn": "Bengali",
+            "ta": "Tamil",
+            "ml": "Malayalam",
+            "mr": "Marathi",
+            "gu": "Gujarati",
+        }
 
     def test_indicbart_lang_codes(self):
         from app.pipeline.multilingual import INDICBART_LANG_CODES
