@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { label: 'Topic Engine',        icon: '🧭', path: '/topic-selection'         },
   { label: 'Literature Finder',   icon: '🔬', path: '/literature-recommendation'},
   { label: 'Plagiarism Check',    icon: '🛡️', path: '/plagiarism-detection'    },
+  { label: 'Multilingual Translation',    icon: '🛡️', path: '/multilingual'    },
 ];
 
 // ── FEATURE CARDS CONFIG ──────────────────────────────────────────────────────
@@ -100,6 +101,26 @@ export default function Home() {
   const navigate  = useNavigate();
   const [scrolled, setScrolled] = useState(false);
   const revealRefs = useRef([]);
+  const [token, setToken] = useState(null);
+  const [userInitial, setUserInitial] = useState('U');
+
+  // Fetch token & user info
+  useEffect(() => {
+    const access = localStorage.getItem('nexus_access_token');
+    if (access) {
+      setToken(access);
+      fetch('http://localhost:8000/auth/me', {
+         headers: { Authorization: `Bearer ${access}` }
+      })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+         if (data && data.full_name) {
+             setUserInitial(data.full_name.charAt(0).toUpperCase());
+         }
+      })
+      .catch(err => console.error(err));
+    }
+  }, []);
 
   // Navbar scroll shadow
   useEffect(() => {
@@ -155,9 +176,37 @@ export default function Home() {
         </ul>
 
         {/* CTA */}
-        <button className="nav-cta" onClick={() => navigate('/topic-selection')} aria-label="Start research">
-          Start Research
-        </button>
+        {token ? (
+          <div 
+             className="nav-profile-btn" 
+             onClick={() => navigate('/profile')} 
+             aria-label="User Profile"
+             style={{
+               width: '40px', height: '40px', borderRadius: '50%',
+               background: 'linear-gradient(135deg, var(--accent-blue, #c5a059), var(--accent-violet, #8c6a00))',
+               display: 'flex', alignItems: 'center', justifyContent: 'center',
+               color: 'white', fontWeight: 'bold', fontSize: '1.2rem',
+               cursor: 'pointer', boxShadow: '0 4px 12px rgba(197, 160, 89, 0.4)',
+               border: '2px solid rgba(255,255,255,0.8)',
+               transition: 'transform 0.2s, box-shadow 0.2s', marginLeft: '1rem'
+             }}
+             onMouseEnter={e => {
+               e.currentTarget.style.transform = 'scale(1.08)';
+               e.currentTarget.style.boxShadow = '0 6px 18px rgba(197, 160, 89, 0.6)';
+             }}
+             onMouseLeave={e => {
+               e.currentTarget.style.transform = 'scale(1)';
+               e.currentTarget.style.boxShadow = '0 4px 12px rgba(197, 160, 89, 0.4)';
+             }}
+             title="Go to Profile & History"
+          >
+             {userInitial}
+          </div>
+        ) : (
+          <button className="nav-cta" onClick={() => navigate('/topic-selection')} aria-label="Start research">
+            Start Research
+          </button>
+        )}
       </nav>
 
       {/* ══════════════════ PAGE ══════════════════ */}

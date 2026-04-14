@@ -96,6 +96,27 @@ export default function PlagiarismDetection() {
       }
 
       const data = await response.json();
+      try {
+        const token = localStorage.getItem("nexus_access_token"); // or wherever you store JWT
+
+        await fetch("http://localhost:8000/usage", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            api_name: "plag_detection",
+            request_data: {
+              filename: file.name
+            },
+            response_data: data
+          })
+        });
+
+      } catch (err) {
+        console.error("Usage logging failed:", err);
+      }
       setResults(data);
     } catch (err) {
       setError(err.message);

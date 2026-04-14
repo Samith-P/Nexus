@@ -34,6 +34,27 @@ export default function TopicSelection() {
       }
 
       const data = await response.json();
+      try {
+        const token = localStorage.getItem("nexus_access_token"); // or wherever you store JWT
+
+        await fetch("http://localhost:8000/usage", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            api_name: "topic_selection",
+            request_data: {
+              query: query
+            },
+            response_data: data
+          })
+        });
+
+      } catch (err) {
+        console.error("Usage logging failed:", err);
+      }
       setResults(data.recommended_topics || []);
     } catch (err) {
       setError(err.message);

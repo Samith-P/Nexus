@@ -37,6 +37,30 @@ export default function JournalRecommendation() {
       const data = await response.json();
       setResults(data.journals || []);
       setMetadata(data.metadata || null);
+
+// ✅ CALL /usage API
+      try {
+        const token = localStorage.getItem("nexus_access_token"); // or wherever you store JWT
+
+        await fetch("http://localhost:8000/usage", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            api_name: "journal_recommendation",
+            request_data: {
+              abstract: abstract,
+              top_k: parseInt(topK, 10) || 10
+            },
+            response_data: data
+          })
+        });
+
+      } catch (err) {
+        console.error("Usage logging failed:", err);
+      }
     } catch (err) {
       setError(err.message);
     } finally {

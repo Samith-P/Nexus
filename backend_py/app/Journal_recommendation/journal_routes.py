@@ -98,7 +98,7 @@ def recommend_journals(req: RecommendJournalsRequest):
             search_depth=max(50, req.top_k * 3)
         )
 
-        return RecommendJournalsResponse(
+        response=RecommendJournalsResponse(
             query_text=f"{gemini_output.get('primary_research_area')} - {gemini_output.get('condensed_summary')}",
             semantic_model="all-MiniLM-L6-v2",
             journals=[JournalRecommendationItem(**j) for j in recommendations],
@@ -108,6 +108,7 @@ def recommend_journals(req: RecommendJournalsRequest):
                 "explanation_type": "deterministic"
             }
         )
+        return response
 
     except ValueError as e:
         raise HTTPException(400, f"Invalid request: {str(e)}")

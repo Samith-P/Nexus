@@ -64,5 +64,6 @@ async def check_plagiarism(
         paper_id=paper_id,
         language=language,
     )
-    return run_check(req=req, file_bytes=file_bytes, filename=filename)
+    response=run_check(req=req, file_bytes=file_bytes, filename=filename)
+    return response 
 

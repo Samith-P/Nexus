@@ -6,7 +6,9 @@ from pathlib import Path
 from Journal_recommendation.journal_routes import router
 from literature_review.api import literature
 from plagiarism_engine.api import plagiarism_api
-
+from Multilingual_Support import azure_routes
+from auth_DB import auth_routes
+from auth_DB import store
 
 _engine_dir_candidates = [
     Path(__file__).parent / "AI_Powered_Topic_Selection_Engine",
@@ -36,6 +38,9 @@ app = FastAPI(
 app.include_router(router)
 app.include_router(plagiarism_api.router)
 app.include_router(literature.router)
+app.include_router(auth_routes.router)
+app.include_router(store.router)
+app.include_router(azure_routes.router)
 # CORS middleware for frontend access
 app.add_middleware(
     CORSMiddleware,
@@ -48,7 +53,9 @@ app.add_middleware(
 @app.post("/topic-recommendation")
 def topic_recommendation(payload: dict):
     """Generate recommended research topics based on query and policies."""
-    return generate_topics(payload)
+    response=generate_topics(payload)
+    
+    return response 
 
 @app.get("/health")
 def health_check():

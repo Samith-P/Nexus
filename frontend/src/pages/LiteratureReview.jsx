@@ -260,8 +260,29 @@ export default function LiteratureReview() {
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.detail || `Server error: ${response.status}`);
       }
-
+      
       const data = await response.json();
+      try {
+        const token = localStorage.getItem("nexus_access_token"); // or wherever you store JWT
+
+        await fetch("http://localhost:8000/usage", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            api_name: "literature_review",
+            request_data: {
+              filename: file.name
+            },
+            response_data: data
+          })
+        });
+
+      } catch (err) {
+        console.error("Usage logging failed:", err);
+      }
       setResults(data);
     } catch (err) {
       setError(err.message);
